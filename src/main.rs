@@ -6,6 +6,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowAttributes};
 
 use clear_ui::color;
+use winit::platform::wayland::WindowAttributesExtWayland;
 use glyphon::{
     Attrs, Buffer, Cache, FontSystem, Metrics, Resolution, SwashCache, TextArea, TextAtlas,
     TextBounds, TextRenderer, Viewport,
@@ -56,6 +57,20 @@ fn make_text_buffer(fs: &mut FontSystem, text: &str, size: f32) -> Buffer {
     buf
 }
 
+fn parse_hex(hex: &str) -> Option<(f32, f32, f32)> {
+    let s = hex.trim_start_matches('#');
+    if s.len() == 6 {
+        u32::from_str_radix(s, 16).ok().map(|v| {
+            let r = ((v >> 16) & 0xFF) as f32 / 255.0;
+            let g = ((v >> 8) & 0xFF) as f32 / 255.0;
+            let b = (v & 0xFF) as f32 / 255.0;
+            (r, g, b)
+        })
+    } else {
+        None
+    }
+}
+
 const HEADER_H: f32 = 36.0;
 const SLIDER_ROW_H: f32 = 36.0;
 const SLIDER_START_Y: f32 = 48.0;
@@ -68,8 +83,12 @@ const PREVIEW_X: f32 = 12.0;
 const PREVIEW_Y: f32 = 168.0;
 const PREVIEW_W: f32 = 160.0;
 const PREVIEW_H: f32 = 72.0;
+const BUTTON_Y: f32 = 252.0;
+const BUTTON_H: f32 = 32.0;
+const BUTTON_W: f32 = 100.0;
+const BUTTON_GAP: f32 = 12.0;
 const WIN_W: f32 = 380.0;
-const WIN_H: f32 = 280.0;
+const WIN_H: f32 = 320.0;
 
 struct RectWidget {
     x: f32, y: f32, w: f32, h: f32,
@@ -84,6 +103,14 @@ struct TextItem {
 
 #[derive(Clone, Copy, PartialEq)]
 enum DragTarget { Red, Green, Blue }
+
+#[derive(Clone, Copy, PartialEq)]
+enum Action { Apply, Cancel }
+
+struct HitButton {
+    x: f32, y: f32, w: f32, h: f32,
+    action: Action,
+}
 
 struct ColorApp {
     window: Arc<Window>,
@@ -107,10 +134,12 @@ struct ColorApp {
 
     rects: Vec<RectWidget>,
     text_items: Vec<TextItem>,
+    action_buttons: Vec<HitButton>,
 
     cursor_x: f32,
     cursor_y: f32,
     dragging: Option<DragTarget>,
+    action_requested: Option<Action>,
 
     scale_factor: f64,
     width: u32,
@@ -119,7 +148,7 @@ struct ColorApp {
 }
 
 impl ColorApp {
-    async fn new(window: Arc<Window>) -> Self {
+    async fn new(window: Arc<Window>, red: f32, green: f32, blue: f32) -> Self {
         let size = window.inner_size();
         let sw = size.width as f32;
         let sh = size.height as f32;
@@ -207,11 +236,13 @@ impl ColorApp {
         let mut app = Self {
             window, surface, device, queue, config, render_pipeline,
             vertex_buffer, vertex_count: 0,
-            red: 0.5, green: 0.5, blue: 0.5,
+            red, green, blue,
             font_system, swash_cache, text_atlas, text_renderer, text_viewport,
             rects: Vec::new(), text_items: Vec::new(),
+            action_buttons: Vec::new(),
             cursor_x: 0.0, cursor_y: 0.0,
             dragging: None,
+            action_requested: None,
             scale_factor,
             width: size.width, height: size.height,
             needs_rebuild: true,
@@ -220,10 +251,18 @@ impl ColorApp {
         app
     }
 
+    fn hex(&self) -> String {
+        format!("#{:02X}{:02X}{:02X}",
+            (self.red * 255.0) as u8,
+            (self.green * 255.0) as u8,
+            (self.blue * 255.0) as u8)
+    }
+
     fn rebuild_layout(&mut self, sw: f32, sh: f32) {
         let s = self.scale_factor as f32;
         let mut rects = Vec::new();
         let mut text_items = Vec::new();
+        let mut action_buttons = Vec::new();
 
         rects.push(RectWidget {
             x: 0.0, y: 0.0, w: sw, h: HEADER_H * s,
@@ -287,10 +326,7 @@ impl ColorApp {
             color: [self.red, self.green, self.blue, 1.0],
         });
 
-        let hex = format!("#{:02X}{:02X}{:02X}",
-            (self.red * 255.0) as u8,
-            (self.green * 255.0) as u8,
-            (self.blue * 255.0) as u8);
+        let hex = self.hex();
         text_items.push(TextItem {
             buffer: make_text_buffer(&mut self.font_system, &hex, 16.0 * s),
             x: (PREVIEW_X + PREVIEW_W + 16.0) * s,
@@ -298,8 +334,48 @@ impl ColorApp {
             color: glyphon::Color::rgb(0xe0, 0xe0, 0xe8),
         });
 
+        // Apply button
+        let apply_x = PREVIEW_X;
+        let cancel_x = PREVIEW_X + BUTTON_W + BUTTON_GAP;
+        let btn_y = BUTTON_Y;
+        let btn_bg = [0.20, 0.40, 0.65, 1.0];
+        let cancel_bg = [0.40, 0.20, 0.20, 1.0];
+
+        rects.push(RectWidget {
+            x: apply_x * s, y: btn_y * s,
+            w: BUTTON_W * s, h: BUTTON_H * s,
+            color: btn_bg,
+        });
+        text_items.push(TextItem {
+            buffer: make_text_buffer(&mut self.font_system, "Apply", 12.0 * s),
+            x: (apply_x + 28.0) * s, y: (btn_y + 8.0) * s,
+            color: glyphon::Color::rgb(0xee, 0xee, 0xf0),
+        });
+        action_buttons.push(HitButton {
+            x: apply_x * s, y: btn_y * s,
+            w: BUTTON_W * s, h: BUTTON_H * s,
+            action: Action::Apply,
+        });
+
+        rects.push(RectWidget {
+            x: cancel_x * s, y: btn_y * s,
+            w: BUTTON_W * s, h: BUTTON_H * s,
+            color: cancel_bg,
+        });
+        text_items.push(TextItem {
+            buffer: make_text_buffer(&mut self.font_system, "Cancel", 12.0 * s),
+            x: (cancel_x + 22.0) * s, y: (btn_y + 8.0) * s,
+            color: glyphon::Color::rgb(0xee, 0xee, 0xf0),
+        });
+        action_buttons.push(HitButton {
+            x: cancel_x * s, y: btn_y * s,
+            w: BUTTON_W * s, h: BUTTON_H * s,
+            action: Action::Cancel,
+        });
+
         self.rects = rects;
         self.text_items = text_items;
+        self.action_buttons = action_buttons;
         self.needs_rebuild = false;
     }
 
@@ -404,6 +480,13 @@ impl ColorApp {
                                 return true;
                             }
                         }
+                        for btn in &self.action_buttons {
+                            if px >= btn.x && px <= btn.x + btn.w && py >= btn.y && py <= btn.y + btn.h {
+                                self.action_requested = Some(btn.action);
+                                self.needs_rebuild = true;
+                                return true;
+                            }
+                        }
                     }
                     ElementState::Released => {
                         if self.dragging.is_some() {
@@ -473,10 +556,17 @@ impl ColorApp {
     }
 }
 
-struct AppWrapper { state: Option<ColorApp> }
+struct AppWrapper {
+    state: Option<ColorApp>,
+    initial_red: f32,
+    initial_green: f32,
+    initial_blue: f32,
+}
 
 impl AppWrapper {
-    fn new() -> Self { Self { state: None } }
+    fn new(red: f32, green: f32, blue: f32) -> Self {
+        Self { state: None, initial_red: red, initial_green: green, initial_blue: blue }
+    }
 }
 
 impl ApplicationHandler for AppWrapper {
@@ -484,10 +574,13 @@ impl ApplicationHandler for AppWrapper {
         if self.state.is_some() { return; }
         let window = Arc::new(event_loop.create_window(
             WindowAttributes::default()
+                .with_name("clear-colors", "clear-colors")
                 .with_title("Clear Colors")
                 .with_inner_size(winit::dpi::LogicalSize::new(WIN_W, WIN_H)),
         ).unwrap());
-        let state = pollster::block_on(ColorApp::new(window));
+        let state = pollster::block_on(ColorApp::new(
+            window, self.initial_red, self.initial_green, self.initial_blue,
+        ));
         self.state = Some(state);
         self.state.as_ref().unwrap().window.request_redraw();
     }
@@ -503,11 +596,27 @@ impl ApplicationHandler for AppWrapper {
             _ => self.state.as_mut().map(|st| st.handle_event(&event)).unwrap_or(false)
         };
         if redraw { if let Some(st) = &mut self.state { st.window.request_redraw(); } }
+        if let Some(st) = &self.state {
+            if let Some(action) = st.action_requested {
+                match action {
+                    Action::Apply => { println!("{}", st.hex()); }
+                    Action::Cancel => {}
+                }
+                event_loop.exit();
+            }
+        }
     }
 }
 
 fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    let (r, g, b) = if args.len() > 1 {
+        parse_hex(&args[1]).unwrap_or((0.5, 0.5, 0.5))
+    } else {
+        (0.5, 0.5, 0.5)
+    };
+
     let event_loop = EventLoop::new().unwrap();
     event_loop.set_control_flow(ControlFlow::Poll);
-    event_loop.run_app(&mut AppWrapper::new()).unwrap();
+    event_loop.run_app(&mut AppWrapper::new(r, g, b)).unwrap();
 }
