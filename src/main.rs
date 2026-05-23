@@ -269,7 +269,7 @@ impl ColorApp {
             color: color::HEADER_BG,
         });
         text_items.push(TextItem {
-            buffer: make_text_buffer(&mut self.font_system, "Clear Color Interface", 14.0 * s),
+            buffer: make_text_buffer(&mut self.font_system, "Clear Design Interface", 14.0 * s),
             x: 12.0 * s, y: 10.0 * s,
             color: glyphon::Color::rgb(0xcc, 0xcc, 0xd4),
         });
@@ -574,8 +574,8 @@ impl ApplicationHandler for AppWrapper {
         if self.state.is_some() { return; }
         let window = Arc::new(event_loop.create_window(
             WindowAttributes::default()
-                .with_name("clear-color-interface", "clear-color-interface")
-                .with_title("Clear Color Interface")
+                .with_name("clear-design-interface", "clear-design-interface")
+                .with_title("Clear Design Interface")
                 .with_inner_size(winit::dpi::LogicalSize::new(WIN_W, WIN_H)),
         ).unwrap());
         let state = pollster::block_on(ColorApp::new(
