@@ -1,16 +1,37 @@
 use std::sync::Arc;
-
-use winit::application::ApplicationHandler;
-use winit::event::{ElementState, MouseButton, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
-use winit::window::{Window, WindowAttributes};
-
-use clear_ui::color;
-use winit::platform::wayland::WindowAttributesExtWayland;
 use glyphon::{
     Attrs, Buffer, Cache, FontSystem, Metrics, Resolution, SwashCache, TextArea, TextAtlas,
     TextBounds, TextRenderer, Viewport,
 };
+use clear_ui::color;
+
+use smithay_client_toolkit::{
+    compositor::{CompositorHandler, CompositorState},
+    delegate_compositor, delegate_keyboard, delegate_pointer, delegate_registry,
+    delegate_seat, delegate_shm, delegate_xdg_shell, delegate_xdg_window, delegate_output,
+    registry::{ProvidesRegistryState, RegistryState},
+    output::{OutputHandler, OutputState},
+    seat::{
+        keyboard::KeyboardHandler,
+        pointer::PointerHandler,
+        Capability, SeatHandler, SeatState,
+    },
+    shell::{
+        xdg::{
+            window::{Window as XdgWindow, WindowConfigure, WindowHandler, WindowDecorations},
+            XdgShell,
+        },
+        WaylandSurface,
+    },
+    shm::{Shm, ShmHandler},
+};
+use wayland_client::{
+    globals::registry_queue_init,
+    protocol::{wl_keyboard, wl_output, wl_pointer, wl_seat, wl_shm, wl_surface},
+    Connection, QueueHandle, Proxy,
+};
+use calloop::EventLoop;
+use calloop_wayland_source::WaylandSource;
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -182,8 +203,9 @@ struct HitButton {
 }
 
 struct ColorApp {
-    window: Arc<Window>,
-    surface: wgpu::Surface<'static>,
+    window: XdgWindow,
+    surface: wl_surface::WlSurface,
+    wgpu_surface: wgpu::Surface<'static>,
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
@@ -221,19 +243,35 @@ struct ColorApp {
 }
 
 impl ColorApp {
-    async fn new(window: Arc<Window>, red: f32, green: f32, blue: f32) -> Self {
-        let size = window.inner_size();
-        let sw = size.width as f32;
-        let sh = size.height as f32;
+    async fn new(
+        conn: &Connection,
+        qh: &QueueHandle<AppState>,
+        compositor_state: &CompositorState,
+        xdg_shell_state: &XdgShell,
+        red: f32,
+        green: f32,
+        blue: f32,
+    ) -> Self {
+        let surface = compositor_state.create_surface(qh);
+        let window = xdg_shell_state.create_window(surface.clone(), WindowDecorations::None, qh);
+        window.set_title("Clear Color Interface");
+        window.set_app_id("clear-color-interface");
+        window.set_min_size(Some((WIN_W as u32, WIN_H as u32)));
+        window.commit();
+
+        let wayland_handle = Box::leak(Box::new(clear_ui::wayland::WaylandSurfaceHandle {
+            display_ptr: conn.backend().display_id().as_ptr() as *mut std::ffi::c_void,
+            surface_ptr: surface.id().as_ptr() as *mut std::ffi::c_void,
+        }));
 
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             backends: wgpu::Backends::VULKAN,
             ..Default::default()
         });
-        let surface = instance.create_surface(window.clone()).expect("surface");
+        let wgpu_surface = instance.create_surface(wayland_handle).expect("surface");
         let adapter = instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
-            compatible_surface: Some(&surface),
+            compatible_surface: Some(&wgpu_surface),
             force_fallback_adapter: false,
         }).await.expect("adapter");
         let (device, queue) = adapter.request_device(&wgpu::DeviceDescriptor {
@@ -242,8 +280,15 @@ impl ColorApp {
             required_limits: wgpu::Limits::downlevel_webgl2_defaults().using_resolution(adapter.limits()),
             memory_hints: wgpu::MemoryHints::MemoryUsage,
         }, None).await.expect("device");
-        let config = surface.get_default_config(&adapter, size.width.max(1), size.height.max(1)).expect("config");
-        surface.configure(&device, &config);
+
+        let scale_factor = 2.0;
+        let width = (WIN_W * scale_factor as f32) as u32;
+        let height = (WIN_H * scale_factor as f32) as u32;
+
+        let mut config = wgpu_surface.get_default_config(&adapter, width, height).expect("config");
+        config.width = width;
+        config.height = height;
+        wgpu_surface.configure(&device, &config);
 
         let shader_code = clear_ui::SHADER;
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -295,7 +340,7 @@ impl ColorApp {
         let mut text_atlas = TextAtlas::new(&device, &queue, &cache, config.format);
         let text_renderer = TextRenderer::new(&mut text_atlas, &device, wgpu::MultisampleState::default(), None);
         let mut text_viewport = Viewport::new(&device, &cache);
-        text_viewport.update(&queue, Resolution { width: size.width, height: size.height });
+        text_viewport.update(&queue, Resolution { width, height });
 
         let vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Vertex Buffer"),
@@ -304,11 +349,9 @@ impl ColorApp {
             mapped_at_creation: false,
         });
 
-        let scale_factor = (window.scale_factor() as f32).max(2.0) as f64;
-
         let (hue, saturation, lightness) = rgb_to_hsl(red, green, blue);
         let mut app = Self {
-            window, surface, device, queue, config, render_pipeline,
+            window, surface, wgpu_surface, device, queue, config, render_pipeline,
             vertex_buffer, vertex_count: 0,
             red, green, blue,
             hue, saturation, lightness,
@@ -321,10 +364,10 @@ impl ColorApp {
             dragging: None,
             action_requested: None,
             scale_factor,
-            width: size.width, height: size.height,
+            width, height,
             needs_rebuild: true,
         };
-        app.rebuild_layout(sw, sh);
+        app.rebuild_layout(width as f32, height as f32);
         app
     }
 
@@ -578,33 +621,180 @@ impl ColorApp {
         text_renderer.prepare(device, queue, font_system, text_atlas, text_viewport, areas, swash_cache).unwrap();
     }
 
-    fn resize(&mut self, size: winit::dpi::PhysicalSize<u32>) {
-        if size.width > 0 && size.height > 0 {
-            self.width = size.width; self.height = size.height;
-            self.config.width = size.width; self.config.height = size.height;
-            self.surface.configure(&self.device, &self.config);
-            self.needs_rebuild = true;
+    fn handle_cursor_moved(&mut self, cx: f32, cy: f32) {
+        self.cursor_x = cx;
+        self.cursor_y = cy;
+        if let Some(drag) = self.dragging {
+            let i = match drag {
+                DragTarget::Red => 0,
+                DragTarget::Green => 1,
+                DragTarget::Blue => 2,
+                DragTarget::Hue => 3,
+                DragTarget::Saturation => 4,
+                DragTarget::Lightness => 5,
+            };
+            let s = self.scale_factor as f32;
+            let (tx, _, tw, _) = Self::slider_physical_rect(i, s);
+            let new_val = ((self.cursor_x - tx) / tw).clamp(0.0, 1.0);
+            let old = match i {
+                0 => self.red,
+                1 => self.green,
+                2 => self.blue,
+                3 => self.hue,
+                4 => self.saturation,
+                _ => self.lightness,
+            };
+            if (new_val - old).abs() > 0.002 {
+                match i {
+                    0 => {
+                        self.red = new_val;
+                        let (h, sat, l) = rgb_to_hsl(self.red, self.green, self.blue);
+                        self.saturation = sat;
+                        self.lightness = l;
+                        if sat > 0.001 && l > 0.001 && l < 0.999 {
+                            self.hue = h;
+                        }
+                    }
+                    1 => {
+                        self.green = new_val;
+                        let (h, sat, l) = rgb_to_hsl(self.red, self.green, self.blue);
+                        self.saturation = sat;
+                        self.lightness = l;
+                        if sat > 0.001 && l > 0.001 && l < 0.999 {
+                            self.hue = h;
+                        }
+                    }
+                    2 => {
+                        self.blue = new_val;
+                        let (h, sat, l) = rgb_to_hsl(self.red, self.green, self.blue);
+                        self.saturation = sat;
+                        self.lightness = l;
+                        if sat > 0.001 && l > 0.001 && l < 0.999 {
+                            self.hue = h;
+                        }
+                    }
+                    3 => {
+                        self.hue = new_val;
+                        let (r, g, b) = hsl_to_rgb(self.hue, self.saturation, self.lightness);
+                        self.red = r;
+                        self.green = g;
+                        self.blue = b;
+                    }
+                    4 => {
+                        self.saturation = new_val;
+                        let (r, g, b) = hsl_to_rgb(self.hue, self.saturation, self.lightness);
+                        self.red = r;
+                        self.green = g;
+                        self.blue = b;
+                    }
+                    _ => {
+                        self.lightness = new_val;
+                        let (r, g, b) = hsl_to_rgb(self.hue, self.saturation, self.lightness);
+                        self.red = r;
+                        self.green = g;
+                        self.blue = b;
+                    }
+                }
+                self.needs_rebuild = true;
+            }
         }
     }
 
-    fn handle_event(&mut self, event: &WindowEvent) -> bool {
-        match event {
-            WindowEvent::CursorMoved { position, .. } => {
-                self.cursor_x = position.x as f32;
-                self.cursor_y = position.y as f32;
-                if let Some(drag) = self.dragging {
-                    let i = match drag {
-                        DragTarget::Red => 0,
-                        DragTarget::Green => 1,
-                        DragTarget::Blue => 2,
-                        DragTarget::Hue => 3,
-                        DragTarget::Saturation => 4,
-                        DragTarget::Lightness => 5,
-                    };
-                    let s = self.scale_factor as f32;
-                    let (tx, _, tw, _) = Self::slider_physical_rect(i, s);
-                    let new_val = ((self.cursor_x - tx) / tw).clamp(0.0, 1.0);
-                    let old = match i {
+    fn handle_mouse_input(&mut self, state: clear_ui::widget::ElementState) {
+        match state {
+            clear_ui::widget::ElementState::Pressed => {
+                let s = self.scale_factor as f32;
+                let (px, py) = (self.cursor_x, self.cursor_y);
+                for i in 0..6 {
+                    let (tx, ty, tw, th) = Self::slider_physical_rect(i, s);
+                    if px >= tx && px <= tx + tw && py >= ty && py <= ty + th {
+                        let val = ((px - tx) / tw).clamp(0.0, 1.0);
+                        match i {
+                            0 => {
+                                self.red = val;
+                                let (h, sat, l) = rgb_to_hsl(self.red, self.green, self.blue);
+                                self.saturation = sat;
+                                self.lightness = l;
+                                if sat > 0.001 && l > 0.001 && l < 0.999 {
+                                    self.hue = h;
+                                }
+                                self.dragging = Some(DragTarget::Red);
+                            }
+                            1 => {
+                                self.green = val;
+                                let (h, sat, l) = rgb_to_hsl(self.red, self.green, self.blue);
+                                self.saturation = sat;
+                                self.lightness = l;
+                                if sat > 0.001 && l > 0.001 && l < 0.999 {
+                                    self.hue = h;
+                                }
+                                self.dragging = Some(DragTarget::Green);
+                            }
+                            2 => {
+                                self.blue = val;
+                                let (h, sat, l) = rgb_to_hsl(self.red, self.green, self.blue);
+                                self.saturation = sat;
+                                self.lightness = l;
+                                if sat > 0.001 && l > 0.001 && l < 0.999 {
+                                    self.hue = h;
+                                }
+                                self.dragging = Some(DragTarget::Blue);
+                            }
+                            3 => {
+                                self.hue = val;
+                                let (r, g, b) = hsl_to_rgb(self.hue, self.saturation, self.lightness);
+                                self.red = r;
+                                self.green = g;
+                                self.blue = b;
+                                self.dragging = Some(DragTarget::Hue);
+                            }
+                            4 => {
+                                self.saturation = val;
+                                let (r, g, b) = hsl_to_rgb(self.hue, self.saturation, self.lightness);
+                                self.red = r;
+                                self.green = g;
+                                self.blue = b;
+                                self.dragging = Some(DragTarget::Saturation);
+                            }
+                            _ => {
+                                self.lightness = val;
+                                let (r, g, b) = hsl_to_rgb(self.hue, self.saturation, self.lightness);
+                                self.red = r;
+                                self.green = g;
+                                self.blue = b;
+                                self.dragging = Some(DragTarget::Lightness);
+                            }
+                        }
+                        self.needs_rebuild = true;
+                        return;
+                    }
+                }
+                for btn in &self.action_buttons {
+                    if px >= btn.x && px <= btn.x + btn.w && py >= btn.y && py <= btn.y + btn.h {
+                        self.action_requested = Some(btn.action);
+                        self.needs_rebuild = true;
+                        return;
+                    }
+                }
+            }
+            clear_ui::widget::ElementState::Released => {
+                if self.dragging.is_some() {
+                    self.dragging = None;
+                }
+            }
+        }
+    }
+
+    fn handle_scroll(&mut self, _scroll_amount_x: f32, scroll_amount_y: f32) {
+        let s = self.scale_factor as f32;
+        let (px, py) = (self.cursor_x, self.cursor_y);
+        let scroll_amount = scroll_amount_y;
+        if scroll_amount.abs() > 0.0001 {
+            for i in 0..6 {
+                let (tx, ty, tw, th) = Self::slider_physical_rect(i, s);
+                if px >= tx && px <= tx + tw && py >= ty - 4.0 * s && py <= ty + th + 4.0 * s {
+                    let step = 0.02;
+                    let old_val = match i {
                         0 => self.red,
                         1 => self.green,
                         2 => self.blue,
@@ -612,7 +802,8 @@ impl ColorApp {
                         4 => self.saturation,
                         _ => self.lightness,
                     };
-                    if (new_val - old).abs() > 0.002 {
+                    let new_val = (old_val + scroll_amount * step).clamp(0.0, 1.0);
+                    if (new_val - old_val).abs() > 0.0001 {
                         match i {
                             0 => {
                                 self.red = new_val;
@@ -666,176 +857,18 @@ impl ColorApp {
                         self.needs_rebuild = true;
                     }
                 }
-                false
             }
-            WindowEvent::MouseWheel { delta, .. } => {
-                let s = self.scale_factor as f32;
-                let (px, py) = (self.cursor_x, self.cursor_y);
-                let scroll_amount = match delta {
-                    winit::event::MouseScrollDelta::LineDelta(_x, y) => *y,
-                    winit::event::MouseScrollDelta::PixelDelta(pos) => (pos.y as f32) / 60.0,
-                };
-                if scroll_amount.abs() > 0.0001 {
-                    for i in 0..6 {
-                        let (tx, ty, tw, th) = Self::slider_physical_rect(i, s);
-                        if px >= tx && px <= tx + tw && py >= ty - 4.0 * s && py <= ty + th + 4.0 * s {
-                            let step = 0.02;
-                            let old_val = match i {
-                                0 => self.red,
-                                1 => self.green,
-                                2 => self.blue,
-                                3 => self.hue,
-                                4 => self.saturation,
-                                _ => self.lightness,
-                            };
-                            let new_val = (old_val + scroll_amount * step).clamp(0.0, 1.0);
-                            if (new_val - old_val).abs() > 0.0001 {
-                                match i {
-                                    0 => {
-                                        self.red = new_val;
-                                        let (h, sat, l) = rgb_to_hsl(self.red, self.green, self.blue);
-                                        self.saturation = sat;
-                                        self.lightness = l;
-                                        if sat > 0.001 && l > 0.001 && l < 0.999 {
-                                            self.hue = h;
-                                        }
-                                    }
-                                    1 => {
-                                        self.green = new_val;
-                                        let (h, sat, l) = rgb_to_hsl(self.red, self.green, self.blue);
-                                        self.saturation = sat;
-                                        self.lightness = l;
-                                        if sat > 0.001 && l > 0.001 && l < 0.999 {
-                                            self.hue = h;
-                                        }
-                                    }
-                                    2 => {
-                                        self.blue = new_val;
-                                        let (h, sat, l) = rgb_to_hsl(self.red, self.green, self.blue);
-                                        self.saturation = sat;
-                                        self.lightness = l;
-                                        if sat > 0.001 && l > 0.001 && l < 0.999 {
-                                            self.hue = h;
-                                        }
-                                    }
-                                    3 => {
-                                        self.hue = new_val;
-                                        let (r, g, b) = hsl_to_rgb(self.hue, self.saturation, self.lightness);
-                                        self.red = r;
-                                        self.green = g;
-                                        self.blue = b;
-                                    }
-                                    4 => {
-                                        self.saturation = new_val;
-                                        let (r, g, b) = hsl_to_rgb(self.hue, self.saturation, self.lightness);
-                                        self.red = r;
-                                        self.green = g;
-                                        self.blue = b;
-                                    }
-                                    _ => {
-                                        self.lightness = new_val;
-                                        let (r, g, b) = hsl_to_rgb(self.hue, self.saturation, self.lightness);
-                                        self.red = r;
-                                        self.green = g;
-                                        self.blue = b;
-                                    }
-                                }
-                                self.needs_rebuild = true;
-                                return true;
-                            }
-                        }
-                    }
-                }
-                false
-            }
-            WindowEvent::MouseInput { state, button, .. } => {
-                if *button != MouseButton::Left { return false; }
-                match state {
-                    ElementState::Pressed => {
-                        let s = self.scale_factor as f32;
-                        let (px, py) = (self.cursor_x, self.cursor_y);
-                        for i in 0..6 {
-                            let (tx, ty, tw, th) = Self::slider_physical_rect(i, s);
-                            if px >= tx && px <= tx + tw && py >= ty && py <= ty + th {
-                                let val = ((px - tx) / tw).clamp(0.0, 1.0);
-                                match i {
-                                    0 => {
-                                        self.red = val;
-                                        let (h, sat, l) = rgb_to_hsl(self.red, self.green, self.blue);
-                                        self.saturation = sat;
-                                        self.lightness = l;
-                                        if sat > 0.001 && l > 0.001 && l < 0.999 {
-                                            self.hue = h;
-                                        }
-                                        self.dragging = Some(DragTarget::Red);
-                                    }
-                                    1 => {
-                                        self.green = val;
-                                        let (h, sat, l) = rgb_to_hsl(self.red, self.green, self.blue);
-                                        self.saturation = sat;
-                                        self.lightness = l;
-                                        if sat > 0.001 && l > 0.001 && l < 0.999 {
-                                            self.hue = h;
-                                        }
-                                        self.dragging = Some(DragTarget::Green);
-                                    }
-                                    2 => {
-                                        self.blue = val;
-                                        let (h, sat, l) = rgb_to_hsl(self.red, self.green, self.blue);
-                                        self.saturation = sat;
-                                        self.lightness = l;
-                                        if sat > 0.001 && l > 0.001 && l < 0.999 {
-                                            self.hue = h;
-                                        }
-                                        self.dragging = Some(DragTarget::Blue);
-                                    }
-                                    3 => {
-                                        self.hue = val;
-                                        let (r, g, b) = hsl_to_rgb(self.hue, self.saturation, self.lightness);
-                                        self.red = r;
-                                        self.green = g;
-                                        self.blue = b;
-                                        self.dragging = Some(DragTarget::Hue);
-                                    }
-                                    4 => {
-                                        self.saturation = val;
-                                        let (r, g, b) = hsl_to_rgb(self.hue, self.saturation, self.lightness);
-                                        self.red = r;
-                                        self.green = g;
-                                        self.blue = b;
-                                        self.dragging = Some(DragTarget::Saturation);
-                                    }
-                                    _ => {
-                                        self.lightness = val;
-                                        let (r, g, b) = hsl_to_rgb(self.hue, self.saturation, self.lightness);
-                                        self.red = r;
-                                        self.green = g;
-                                        self.blue = b;
-                                        self.dragging = Some(DragTarget::Lightness);
-                                    }
-                                }
-                                self.needs_rebuild = true;
-                                return true;
-                            }
-                        }
-                        for btn in &self.action_buttons {
-                            if px >= btn.x && px <= btn.x + btn.w && py >= btn.y && py <= btn.y + btn.h {
-                                self.action_requested = Some(btn.action);
-                                self.needs_rebuild = true;
-                                return true;
-                            }
-                        }
-                    }
-                    ElementState::Released => {
-                        if self.dragging.is_some() {
-                            self.dragging = None;
-                            return true;
-                        }
-                    }
-                }
-                false
-            }
-            _ => false,
+        }
+    }
+
+    fn resize(&mut self, width: u32, height: u32) {
+        if width > 0 && height > 0 {
+            self.width = width;
+            self.height = height;
+            self.config.width = width;
+            self.config.height = height;
+            self.wgpu_surface.configure(&self.device, &self.config);
+            self.needs_rebuild = true;
         }
     }
 
@@ -850,10 +883,10 @@ impl ColorApp {
 
         self.prepare_text();
 
-        let output = match self.surface.get_current_texture() {
+        let output = match self.wgpu_surface.get_current_texture() {
             Ok(t) => t,
             Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
-                self.surface.configure(&self.device, &self.config);
+                self.wgpu_surface.configure(&self.device, &self.config);
                 return;
             }
             Err(wgpu::SurfaceError::Timeout) => return,
@@ -889,64 +922,332 @@ impl ColorApp {
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));
-        self.window.pre_present_notify();
         output.present();
     }
 }
 
-struct AppWrapper {
+struct AppState {
+    registry_state: RegistryState,
+    compositor_state: CompositorState,
+    xdg_shell_state: XdgShell,
+    shm_state: Shm,
+    seat_state: SeatState,
+    output_state: OutputState,
+
+    seats: Vec<wl_seat::WlSeat>,
+    pointer: Option<wl_pointer::WlPointer>,
+    keyboard: Option<wl_keyboard::WlKeyboard>,
+
+    window: XdgWindow,
+    surface: wl_surface::WlSurface,
+
     state: Option<ColorApp>,
-    initial_red: f32,
-    initial_green: f32,
-    initial_blue: f32,
+    exit: bool,
+    redraw: bool,
 }
 
-impl AppWrapper {
-    fn new(red: f32, green: f32, blue: f32) -> Self {
-        Self { state: None, initial_red: red, initial_green: green, initial_blue: blue }
+impl CompositorHandler for AppState {
+    fn scale_factor_changed(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _surface: &wl_surface::WlSurface,
+        scale_factor: i32,
+    ) {
+        if let Some(state) = &mut self.state {
+            state.scale_factor = (scale_factor as f32).max(2.0) as f64;
+            state.resize((WIN_W * state.scale_factor as f32) as u32, (WIN_H * state.scale_factor as f32) as u32);
+            self.redraw = true;
+        }
+    }
+
+    fn transform_changed(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _surface: &wl_surface::WlSurface,
+        _new_transform: wl_output::Transform,
+    ) {
+    }
+
+    fn frame(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _surface: &wl_surface::WlSurface,
+        _time: u32,
+    ) {
+    }
+
+    fn surface_enter(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _surface: &wl_surface::WlSurface,
+        _output: &wl_output::WlOutput,
+    ) {
+    }
+
+    fn surface_leave(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _surface: &wl_surface::WlSurface,
+        _output: &wl_output::WlOutput,
+    ) {
     }
 }
 
-impl ApplicationHandler for AppWrapper {
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.state.is_some() { return; }
-        let size = winit::dpi::LogicalSize::new(WIN_W, WIN_H);
-        let window = Arc::new(event_loop.create_window(
-            WindowAttributes::default()
-                .with_name("clear-color-interface", "clear-color-interface")
-                .with_title("Clear Color Interface")
-                .with_inner_size(size)
-                .with_min_inner_size(size),
-        ).unwrap());
-        let state = pollster::block_on(ColorApp::new(
-            window, self.initial_red, self.initial_green, self.initial_blue,
-        ));
-        self.state = Some(state);
-        self.state.as_ref().unwrap().window.request_redraw();
+impl OutputHandler for AppState {
+    fn output_state(&mut self) -> &mut OutputState {
+        &mut self.output_state
     }
 
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: winit::window::WindowId, event: WindowEvent) {
-        let redraw = match &event {
-            WindowEvent::CloseRequested => { event_loop.exit(); true }
-            WindowEvent::Resized(s) => { if let Some(st) = &mut self.state { st.resize(*s); } true }
-            WindowEvent::RedrawRequested => {
-                if let Some(st) = &mut self.state { st.render(); st.window.request_redraw(); }
-                true
-            }
-            _ => self.state.as_mut().map(|st| st.handle_event(&event)).unwrap_or(false)
-        };
-        if redraw { if let Some(st) = &mut self.state { st.window.request_redraw(); } }
-        if let Some(st) = &self.state {
-            if let Some(action) = st.action_requested {
-                match action {
-                    Action::Apply => { println!("{}", st.hex()); }
-                    Action::Cancel => {}
+    fn new_output(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _output: wl_output::WlOutput,
+    ) {
+    }
+
+    fn update_output(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _output: wl_output::WlOutput,
+    ) {
+    }
+
+    fn output_destroyed(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _output: wl_output::WlOutput,
+    ) {
+    }
+}
+
+impl SeatHandler for AppState {
+    fn seat_state(&mut self) -> &mut SeatState {
+        &mut self.seat_state
+    }
+
+    fn new_seat(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, seat: wl_seat::WlSeat) {
+        self.seats.push(seat);
+    }
+
+    fn new_capability(
+        &mut self,
+        _conn: &Connection,
+        qh: &QueueHandle<Self>,
+        seat: wl_seat::WlSeat,
+        capability: Capability,
+    ) {
+        if capability == Capability::Pointer && self.pointer.is_none() {
+            let pointer = self.seat_state.get_pointer(qh, &seat).unwrap();
+            self.pointer = Some(pointer);
+        }
+        if capability == Capability::Keyboard && self.keyboard.is_none() {
+            let keyboard = self
+                .seat_state
+                .get_keyboard(qh, &seat, None)
+                .unwrap();
+            self.keyboard = Some(keyboard);
+        }
+    }
+
+    fn remove_capability(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _seat: wl_seat::WlSeat,
+        capability: Capability,
+    ) {
+        if capability == Capability::Pointer {
+            self.pointer = None;
+        }
+        if capability == Capability::Keyboard {
+            self.keyboard = None;
+        }
+    }
+
+    fn remove_seat(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, seat: wl_seat::WlSeat) {
+        self.seats.retain(|s| s != &seat);
+    }
+}
+
+impl ShmHandler for AppState {
+    fn shm_state(&mut self) -> &mut Shm {
+        &mut self.shm_state
+    }
+}
+
+impl PointerHandler for AppState {
+    fn pointer_frame(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _pointer: &wl_pointer::WlPointer,
+        events: &[smithay_client_toolkit::seat::pointer::PointerEvent],
+    ) {
+        use smithay_client_toolkit::seat::pointer::PointerEventKind;
+        for event in events {
+            let (x, y) = event.position;
+            match &event.kind {
+                PointerEventKind::Motion { .. } => {
+                    if let Some(st) = &mut self.state {
+                        let cx = (x * st.scale_factor) as f32;
+                        let cy = (y * st.scale_factor) as f32;
+                        st.handle_cursor_moved(cx, cy);
+                        self.redraw = true;
+                    }
                 }
-                event_loop.exit();
+                PointerEventKind::Press { button, .. } => {
+                    if *button == 272 {
+                        if let Some(st) = &mut self.state {
+                            let cx = (x * st.scale_factor) as f32;
+                            let cy = (y * st.scale_factor) as f32;
+                            st.cursor_x = cx;
+                            st.cursor_y = cy;
+                            st.handle_mouse_input(clear_ui::widget::ElementState::Pressed);
+                            self.redraw = true;
+                        }
+                    }
+                }
+                PointerEventKind::Release { button, .. } => {
+                    if *button == 272 {
+                        if let Some(st) = &mut self.state {
+                            let cx = (x * st.scale_factor) as f32;
+                            let cy = (y * st.scale_factor) as f32;
+                            st.cursor_x = cx;
+                            st.cursor_y = cy;
+                            st.handle_mouse_input(clear_ui::widget::ElementState::Released);
+                            self.redraw = true;
+                        }
+                    }
+                }
+                PointerEventKind::Axis { horizontal, vertical, .. } => {
+                    if let Some(st) = &mut self.state {
+                        let h_scroll = horizontal.absolute as f32;
+                        let v_scroll = vertical.absolute as f32;
+                        st.handle_scroll(-h_scroll / 10.0, -v_scroll / 10.0);
+                        self.redraw = true;
+                    }
+                }
+                _ => {}
             }
         }
     }
 }
+
+impl KeyboardHandler for AppState {
+    fn enter(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _keyboard: &wl_keyboard::WlKeyboard,
+        _surface: &wl_surface::WlSurface,
+        _serial: u32,
+        _raw_modifiers: &[u32],
+        _keysyms: &[xkeysym::Keysym],
+    ) {}
+
+    fn leave(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _keyboard: &wl_keyboard::WlKeyboard,
+        _surface: &wl_surface::WlSurface,
+        _serial: u32,
+    ) {}
+
+    fn press_key(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _keyboard: &wl_keyboard::WlKeyboard,
+        _serial: u32,
+        _event: smithay_client_toolkit::seat::keyboard::KeyEvent,
+    ) {}
+
+    fn release_key(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _keyboard: &wl_keyboard::WlKeyboard,
+        _serial: u32,
+        _event: smithay_client_toolkit::seat::keyboard::KeyEvent,
+    ) {}
+
+    fn update_modifiers(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _keyboard: &wl_keyboard::WlKeyboard,
+        _serial: u32,
+        _modifiers: smithay_client_toolkit::seat::keyboard::Modifiers,
+        _layout: u32,
+    ) {}
+}
+
+impl WindowHandler for AppState {
+    fn configure(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _window: &XdgWindow,
+        configure: WindowConfigure,
+        _serial: u32,
+    ) {
+        let (w, h) = configure.new_size;
+        if let (Some(w), Some(h)) = (w, h) {
+            let width = w.get();
+            let height = h.get();
+            if let Some(state) = &mut self.state {
+                state.resize(width, height);
+            }
+        }
+        self.redraw = true;
+    }
+
+    fn request_close(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _window: &XdgWindow) {
+        self.exit = true;
+    }
+}
+
+impl ProvidesRegistryState for AppState {
+    fn registry(&mut self) -> &mut RegistryState {
+        &mut self.registry_state
+    }
+    
+    fn runtime_add_global(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _name: u32,
+        _interface: &str,
+        _version: u32,
+    ) {}
+    
+    fn runtime_remove_global(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _name: u32,
+        _interface: &str,
+    ) {}
+}
+
+delegate_compositor!(AppState);
+delegate_xdg_shell!(AppState);
+delegate_xdg_window!(AppState);
+delegate_shm!(AppState);
+delegate_seat!(AppState);
+delegate_pointer!(AppState);
+delegate_keyboard!(AppState);
+delegate_registry!(AppState);
+delegate_output!(AppState);
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -956,7 +1257,68 @@ fn main() {
         (0.5, 0.5, 0.5)
     };
 
-    let event_loop = EventLoop::new().unwrap();
-    event_loop.set_control_flow(ControlFlow::Poll);
-    event_loop.run_app(&mut AppWrapper::new(r, g, b)).unwrap();
+    let conn = Connection::connect_to_env().unwrap();
+    let (globals, mut event_queue) = registry_queue_init(&conn).unwrap();
+    let qh = event_queue.handle();
+
+    let compositor_state = CompositorState::bind(&globals, &qh).unwrap();
+    let xdg_shell_state = XdgShell::bind(&globals, &qh).unwrap();
+    let shm_state = Shm::bind(&globals, &qh).unwrap();
+    let seat_state = SeatState::new(&globals, &qh);
+    let output_state = OutputState::new(&globals, &qh);
+
+    let state = pollster::block_on(ColorApp::new(
+        &conn,
+        &qh,
+        &compositor_state,
+        &xdg_shell_state,
+        r, g, b
+    ));
+
+    let mut app = AppState {
+        registry_state: RegistryState::new(&globals),
+        compositor_state,
+        xdg_shell_state,
+        shm_state,
+        seat_state,
+        output_state,
+        seats: Vec::new(),
+        pointer: None,
+        keyboard: None,
+        window: state.window.clone(),
+        surface: state.surface.clone(),
+        state: Some(state),
+        exit: false,
+        redraw: true,
+    };
+
+    let mut event_loop = EventLoop::try_new().unwrap();
+    let loop_handle = event_loop.handle();
+    WaylandSource::new(conn, event_queue).insert(loop_handle).unwrap();
+
+    loop {
+        event_loop
+            .dispatch(std::time::Duration::from_millis(16), &mut app)
+            .unwrap();
+        if app.exit {
+            break;
+        }
+        if let Some(ref state) = app.state {
+            if let Some(action) = state.action_requested {
+                match action {
+                    Action::Apply => {
+                        println!("{}", state.hex());
+                    }
+                    Action::Cancel => {}
+                }
+                break;
+            }
+        }
+        if app.redraw {
+            app.redraw = false;
+            if let Some(state) = &mut app.state {
+                state.render();
+            }
+        }
+    }
 }
