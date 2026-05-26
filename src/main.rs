@@ -251,8 +251,10 @@ impl ColorApp {
         red: f32,
         green: f32,
         blue: f32,
+        scale: f64,
     ) -> Self {
         let surface = compositor_state.create_surface(qh);
+        surface.set_buffer_scale(scale as i32);
         let window = xdg_shell_state.create_window(surface.clone(), WindowDecorations::None, qh);
         window.set_title("Clear Color Interface");
         window.set_app_id("clear-color-interface");
@@ -281,7 +283,7 @@ impl ColorApp {
             memory_hints: wgpu::MemoryHints::MemoryUsage,
         }, None).await.expect("device");
 
-        let scale_factor = 2.0;
+        let scale_factor = scale;
         let width = (WIN_W * scale_factor as f32) as u32;
         let height = (WIN_H * scale_factor as f32) as u32;
 
@@ -938,8 +940,8 @@ struct AppState {
     pointer: Option<wl_pointer::WlPointer>,
     keyboard: Option<wl_keyboard::WlKeyboard>,
 
-    window: XdgWindow,
-    surface: wl_surface::WlSurface,
+    window: Option<XdgWindow>,
+    surface: Option<wl_surface::WlSurface>,
 
     state: Option<ColorApp>,
     exit: bool,
@@ -954,8 +956,9 @@ impl CompositorHandler for AppState {
         _surface: &wl_surface::WlSurface,
         scale_factor: i32,
     ) {
+        _surface.set_buffer_scale(scale_factor);
         if let Some(state) = &mut self.state {
-            state.scale_factor = (scale_factor as f32).max(2.0) as f64;
+            state.scale_factor = scale_factor as f64;
             state.resize((WIN_W * state.scale_factor as f32) as u32, (WIN_H * state.scale_factor as f32) as u32);
             self.redraw = true;
         }
@@ -1093,49 +1096,37 @@ impl PointerHandler for AppState {
     ) {
         use smithay_client_toolkit::seat::pointer::PointerEventKind;
         for event in events {
-            let (x, y) = event.position;
-            match &event.kind {
-                PointerEventKind::Motion { .. } => {
-                    if let Some(st) = &mut self.state {
-                        let cx = (x * st.scale_factor) as f32;
-                        let cy = (y * st.scale_factor) as f32;
+            if let Some(st) = &mut self.state {
+                let (cx, cy) = clear_ui::wayland::scale_pointer_pos(event.position, st.scale_factor);
+                match &event.kind {
+                    PointerEventKind::Motion { .. } => {
                         st.handle_cursor_moved(cx, cy);
                         self.redraw = true;
                     }
-                }
-                PointerEventKind::Press { button, .. } => {
-                    if *button == 272 {
-                        if let Some(st) = &mut self.state {
-                            let cx = (x * st.scale_factor) as f32;
-                            let cy = (y * st.scale_factor) as f32;
+                    PointerEventKind::Press { button, .. } => {
+                        if *button == 272 {
                             st.cursor_x = cx;
                             st.cursor_y = cy;
                             st.handle_mouse_input(clear_ui::widget::ElementState::Pressed);
                             self.redraw = true;
                         }
                     }
-                }
-                PointerEventKind::Release { button, .. } => {
-                    if *button == 272 {
-                        if let Some(st) = &mut self.state {
-                            let cx = (x * st.scale_factor) as f32;
-                            let cy = (y * st.scale_factor) as f32;
+                    PointerEventKind::Release { button, .. } => {
+                        if *button == 272 {
                             st.cursor_x = cx;
                             st.cursor_y = cy;
                             st.handle_mouse_input(clear_ui::widget::ElementState::Released);
                             self.redraw = true;
                         }
                     }
-                }
-                PointerEventKind::Axis { horizontal, vertical, .. } => {
-                    if let Some(st) = &mut self.state {
+                    PointerEventKind::Axis { horizontal, vertical, .. } => {
                         let h_scroll = horizontal.absolute as f32;
                         let v_scroll = vertical.absolute as f32;
                         st.handle_scroll(-h_scroll / 10.0, -v_scroll / 10.0);
                         self.redraw = true;
                     }
+                    _ => {}
                 }
-                _ => {}
             }
         }
     }
@@ -1205,7 +1196,9 @@ impl WindowHandler for AppState {
             let width = w.get();
             let height = h.get();
             if let Some(state) = &mut self.state {
-                state.resize(width, height);
+                let pw = (width as f64 * state.scale_factor) as u32;
+                let ph = (height as f64 * state.scale_factor) as u32;
+                state.resize(pw, ph);
             }
         }
         self.redraw = true;
@@ -1267,14 +1260,6 @@ fn main() {
     let seat_state = SeatState::new(&globals, &qh);
     let output_state = OutputState::new(&globals, &qh);
 
-    let state = pollster::block_on(ColorApp::new(
-        &conn,
-        &qh,
-        &compositor_state,
-        &xdg_shell_state,
-        r, g, b
-    ));
-
     let mut app = AppState {
         registry_state: RegistryState::new(&globals),
         compositor_state,
@@ -1285,12 +1270,30 @@ fn main() {
         seats: Vec::new(),
         pointer: None,
         keyboard: None,
-        window: state.window.clone(),
-        surface: state.surface.clone(),
-        state: Some(state),
+        window: None,
+        surface: None,
+        state: None,
         exit: false,
         redraw: true,
     };
+
+    // Perform a roundtrip to populate output_state with active output scales
+    event_queue.roundtrip(&mut app).unwrap();
+
+    let scale = clear_ui::wayland::detect_scale_factor(&app.output_state);
+
+    let state = pollster::block_on(ColorApp::new(
+        &conn,
+        &qh,
+        &app.compositor_state,
+        &app.xdg_shell_state,
+        r, g, b,
+        scale,
+    ));
+
+    app.window = Some(state.window.clone());
+    app.surface = Some(state.surface.clone());
+    app.state = Some(state);
 
     let mut event_loop = EventLoop::try_new().unwrap();
     let loop_handle = event_loop.handle();
