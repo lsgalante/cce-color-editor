@@ -450,8 +450,8 @@ impl ColorApp {
             for j in 0..n_segments {
                 let t0 = j as f32 / n_segments as f32;
                 let t1 = (j + 1) as f32 / n_segments as f32;
-                let c0 = get_color_at(i, t0);
-                let c1 = get_color_at(i, t1);
+                let c0 = color::to_linear(get_color_at(i, t0));
+                let c1 = color::to_linear(get_color_at(i, t1));
                 gradient_rects.push(GradientRectWidget {
                     x: (SLIDER_TRACK_X + t0 * SLIDER_TRACK_W) * s,
                     y: track_y,
@@ -509,7 +509,7 @@ impl ColorApp {
         rects.push(RectWidget {
             x: PREVIEW_X * s, y: PREVIEW_Y * s,
             w: PREVIEW_W * s, h: PREVIEW_H * s,
-            color: [self.red, self.green, self.blue, 1.0],
+            color: color::to_linear([self.red, self.green, self.blue, 1.0]),
         });
 
         let hex = self.hex();
