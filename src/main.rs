@@ -272,7 +272,7 @@ impl ColorApp {
         });
         let wgpu_surface = instance.create_surface(wayland_handle).expect("surface");
         let adapter = instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
+            power_preference: wgpu::PowerPreference::LowPower,
             compatible_surface: Some(&wgpu_surface),
             force_fallback_adapter: false,
         }).await.expect("adapter");
