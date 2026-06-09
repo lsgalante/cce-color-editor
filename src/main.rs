@@ -259,7 +259,7 @@ impl ColorApp {
         surface.set_buffer_scale(scale as i32);
         let window = xdg_shell_state.create_window(surface.clone(), WindowDecorations::None, qh);
         window.set_title("Clear Color Interface");
-        window.set_app_id("clear-color-interface");
+        window.set_app_id("cce-color-interface");
         window.set_min_size(Some((WIN_W as u32, WIN_H as u32)));
         window.commit();
 
@@ -618,7 +618,7 @@ impl ColorApp {
         let bounds = TextBounds { left: 0, top: 0, right: w as i32, bottom: h as i32 };
         let areas: Vec<TextArea> = text_items.iter().map(|ti| TextArea {
             buffer: &ti.buffer,
-            left: ti.x, top: ti.y, scale: 1.0, bounds,
+            left: ti.x.round(), top: ti.y.round(), scale: 1.0, bounds,
             default_color: ti.color,
             custom_glyphs: &[],
         }).collect();

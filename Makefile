@@ -5,7 +5,7 @@ build:
 
 install: build
 	mkdir -p ~/.local/bin
-	install -m 755 target/release/clear-color-interface ~/.local/bin/clear-color-interface
+	install -m 755 target/release/cce-color-interface ~/.local/bin/cce-color-interface
 
 run:
 	cargo run
