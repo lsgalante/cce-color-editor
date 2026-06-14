@@ -95,14 +95,22 @@ fn make_text_buffer(fs: &mut FontSystem, text: &str, size: f32) -> Buffer {
     buf
 }
 
-fn parse_hex(hex: &str) -> Option<(f32, f32, f32)> {
+fn parse_hex(hex: &str) -> Option<(f32, f32, f32, Option<f32>)> {
     let s = hex.trim_start_matches('#');
     if s.len() == 6 {
         u32::from_str_radix(s, 16).ok().map(|v| {
             let r = ((v >> 16) & 0xFF) as f32 / 255.0;
             let g = ((v >> 8) & 0xFF) as f32 / 255.0;
             let b = (v & 0xFF) as f32 / 255.0;
-            (r, g, b)
+            (r, g, b, None)
+        })
+    } else if s.len() == 8 {
+        u32::from_str_radix(s, 16).ok().map(|v| {
+            let r = ((v >> 24) & 0xFF) as f32 / 255.0;
+            let g = ((v >> 16) & 0xFF) as f32 / 255.0;
+            let b = ((v >> 8) & 0xFF) as f32 / 255.0;
+            let a = (v & 0xFF) as f32 / 255.0;
+            (r, g, b, Some(a))
         })
     } else {
         None
@@ -194,7 +202,7 @@ struct TextItem {
 }
 
 #[derive(Clone, Copy, PartialEq)]
-enum DragTarget { Red, Green, Blue, Hue, Saturation, Lightness }
+enum DragTarget { Red, Green, Blue, Hue, Saturation, Lightness, Alpha }
 
 #[derive(Clone, Copy, PartialEq)]
 enum Action { Apply, Cancel }
@@ -221,6 +229,8 @@ struct ColorApp {
     hue: f32,
     saturation: f32,
     lightness: f32,
+    alpha: f32,
+    with_alpha: bool,
 
     font_system: FontSystem,
     swash_cache: SwashCache,
@@ -253,6 +263,8 @@ impl ColorApp {
         red: f32,
         green: f32,
         blue: f32,
+        alpha: f32,
+        with_alpha: bool,
         scale: f64,
     ) -> Self {
         let surface = compositor_state.create_surface(qh);
@@ -260,7 +272,8 @@ impl ColorApp {
         let window = xdg_shell_state.create_window(surface.clone(), WindowDecorations::None, qh);
         window.set_title("Clear Color Interface");
         window.set_app_id("cce-color-interface");
-        window.set_min_size(Some((WIN_W as u32, WIN_H as u32)));
+        let win_h = if with_alpha { WIN_H + SLIDER_ROW_H } else { WIN_H };
+        window.set_min_size(Some((WIN_W as u32, win_h as u32)));
         window.commit();
 
         let wayland_handle = Box::leak(Box::new(clear_ui::wayland::WaylandSurfaceHandle {
@@ -287,7 +300,7 @@ impl ColorApp {
 
         let scale_factor = scale;
         let width = (WIN_W * scale_factor as f32) as u32;
-        let height = (WIN_H * scale_factor as f32) as u32;
+        let height = (win_h * scale_factor as f32) as u32;
 
         let mut config = wgpu_surface.get_default_config(&adapter, width, height).expect("config");
         config.width = width;
@@ -359,6 +372,8 @@ impl ColorApp {
             vertex_buffer, vertex_count: 0,
             red, green, blue,
             hue, saturation, lightness,
+            alpha,
+            with_alpha,
             font_system, swash_cache, text_atlas, text_renderer, text_viewport,
             rects: Vec::new(),
             gradient_rects: Vec::new(),
@@ -376,10 +391,18 @@ impl ColorApp {
     }
 
     fn hex(&self) -> String {
-        format!("#{:02X}{:02X}{:02X}",
-            (self.red * 255.0) as u8,
-            (self.green * 255.0) as u8,
-            (self.blue * 255.0) as u8)
+        if self.with_alpha {
+            format!("#{:02X}{:02X}{:02X}{:02X}",
+                (self.red * 255.0) as u8,
+                (self.green * 255.0) as u8,
+                (self.blue * 255.0) as u8,
+                (self.alpha * 255.0) as u8)
+        } else {
+            format!("#{:02X}{:02X}{:02X}",
+                (self.red * 255.0) as u8,
+                (self.green * 255.0) as u8,
+                (self.blue * 255.0) as u8)
+        }
     }
 
     fn rebuild_layout(&mut self, sw: f32, sh: f32) {
@@ -404,8 +427,12 @@ impl ColorApp {
             color: color::CONTENT_BG,
         });
 
-        let channels = [self.red, self.green, self.blue, self.hue, self.saturation, self.lightness];
-        let labels = ['R', 'G', 'B', 'H', 'S', 'L'];
+        let mut channels = vec![self.red, self.green, self.blue, self.hue, self.saturation, self.lightness];
+        let mut labels = vec!['R', 'G', 'B', 'H', 'S', 'L'];
+        if self.with_alpha {
+            channels.push(self.alpha);
+            labels.push('A');
+        }
 
         let red = self.red;
         let green = self.green;
@@ -413,28 +440,30 @@ impl ColorApp {
         let hue = self.hue;
         let saturation = self.saturation;
         let lightness = self.lightness;
+        let alpha = self.alpha;
 
         let get_color_at = |i: usize, t: f32| -> [f32; 4] {
             match i {
-                0 => [t, green, blue, 1.0],
-                1 => [red, t, blue, 1.0],
-                2 => [red, green, t, 1.0],
+                0 => [t, green, blue, alpha],
+                1 => [red, t, blue, alpha],
+                2 => [red, green, t, alpha],
                 3 => {
                     let (r, g, b) = hsl_to_rgb(t, saturation, lightness);
-                    [r, g, b, 1.0]
+                    [r, g, b, alpha]
                 }
                 4 => {
                     let (r, g, b) = hsl_to_rgb(hue, t, lightness);
-                    [r, g, b, 1.0]
+                    [r, g, b, alpha]
                 }
-                _ => {
+                5 => {
                     let (r, g, b) = hsl_to_rgb(hue, saturation, t);
-                    [r, g, b, 1.0]
+                    [r, g, b, alpha]
                 }
+                _ => [red, green, blue, t],
             }
         };
 
-        for i in 0..6 {
+        for i in 0..channels.len() {
             let row_y = (SLIDER_START_Y + i as f32 * SLIDER_ROW_H) * s;
             let track_y = row_y + ((SLIDER_ROW_H - SLIDER_TRACK_H) / 2.0) * s;
 
@@ -446,6 +475,44 @@ impl ColorApp {
                 h: (SLIDER_TRACK_H + 2.0) * s,
                 color: [0.08, 0.08, 0.10, 1.0],
             });
+
+            if i == 6 {
+                // Draw checkerboard behind the alpha slider track
+                let track_x = SLIDER_TRACK_X * s;
+                let track_w = SLIDER_TRACK_W * s;
+                let track_h = SLIDER_TRACK_H * s;
+                let grid_size = track_h / 2.0; // Two rows of checkers
+                let cols = (track_w / grid_size).ceil() as i32;
+                
+                // First draw a solid light gray background
+                rects.push(RectWidget {
+                    x: track_x,
+                    y: track_y,
+                    w: track_w,
+                    h: track_h,
+                    color: [0.8, 0.8, 0.8, 1.0],
+                });
+                
+                for r in 0..2 {
+                    for c in 0..cols {
+                        if (r + c) % 2 == 1 {
+                            let qx = track_x + c as f32 * grid_size;
+                            let qy = track_y + r as f32 * grid_size;
+                            let qw = grid_size.min(track_x + track_w - qx);
+                            let qh = grid_size.min(track_y + track_h - qy);
+                            if qw > 0.0 && qh > 0.0 {
+                                rects.push(RectWidget {
+                                    x: qx,
+                                    y: qy,
+                                    w: qw,
+                                    h: qh,
+                                    color: [1.0, 1.0, 1.0, 1.0],
+                                });
+                            }
+                        }
+                    }
+                }
+            }
 
             // Draw gradient track
             let n_segments = if i == 3 { 30 } else { 10 };
@@ -498,8 +565,10 @@ impl ColorApp {
                 format!("{}", (channels[i] * 255.0) as u8)
             } else if i == 3 {
                 format!("{}°", (channels[i] * 360.0).round() as u16)
-            } else {
+            } else if i < 6 {
                 format!("{}%", (channels[i] * 100.0).round() as u8)
+            } else {
+                format!("{}", (channels[i] * 255.0).round() as u8)
             };
             text_items.push(TextItem {
                 buffer: make_text_buffer(&mut self.font_system, &val, 11.0 * s),
@@ -508,24 +577,62 @@ impl ColorApp {
             });
         }
 
+        let preview_y_offset = if self.with_alpha { SLIDER_ROW_H } else { 0.0 };
+        let preview_y = PREVIEW_Y + preview_y_offset;
+        let button_y = BUTTON_Y + preview_y_offset;
+
+        if self.with_alpha {
+            // Draw checkerboard behind the preview box
+            let px = PREVIEW_X * s;
+            let py = preview_y * s;
+            let pw = PREVIEW_W * s;
+            let ph = PREVIEW_H * s;
+            
+            // Draw base light gray
+            rects.push(RectWidget {
+                x: px, y: py, w: pw, h: ph,
+                color: [0.8, 0.8, 0.8, 1.0],
+            });
+            
+            let grid_size = 12.0 * s;
+            let cols = (pw / grid_size).ceil() as i32;
+            let rows = (ph / grid_size).ceil() as i32;
+            for r in 0..rows {
+                for c in 0..cols {
+                    if (r + c) % 2 == 1 {
+                        let qx = px + c as f32 * grid_size;
+                        let qy = py + r as f32 * grid_size;
+                        let qw = grid_size.min(px + pw - qx);
+                        let qh = grid_size.min(py + ph - qy);
+                        if qw > 0.0 && qh > 0.0 {
+                            rects.push(RectWidget {
+                                x: qx, y: qy, w: qw, h: qh,
+                                color: [1.0, 1.0, 1.0, 1.0],
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
         rects.push(RectWidget {
-            x: PREVIEW_X * s, y: PREVIEW_Y * s,
+            x: PREVIEW_X * s, y: preview_y * s,
             w: PREVIEW_W * s, h: PREVIEW_H * s,
-            color: color::to_linear([self.red, self.green, self.blue, 1.0]),
+            color: color::to_linear([self.red, self.green, self.blue, if self.with_alpha { self.alpha } else { 1.0 }]),
         });
 
         let hex = self.hex();
         text_items.push(TextItem {
             buffer: make_text_buffer(&mut self.font_system, &hex, 16.0 * s),
             x: (PREVIEW_X + PREVIEW_W + 16.0) * s,
-            y: (PREVIEW_Y + 26.0) * s,
+            y: (preview_y + 26.0) * s,
             color: glyphon::Color::rgb(0xe0, 0xe0, 0xe8),
         });
 
         // Apply button
         let apply_x = PREVIEW_X;
         let cancel_x = PREVIEW_X + BUTTON_W + BUTTON_GAP;
-        let btn_y = BUTTON_Y;
+        let btn_y = button_y;
         let btn_bg = [0.20, 0.40, 0.65, 1.0];
         let cancel_bg = [0.40, 0.20, 0.20, 1.0];
 
@@ -636,6 +743,7 @@ impl ColorApp {
                 DragTarget::Hue => 3,
                 DragTarget::Saturation => 4,
                 DragTarget::Lightness => 5,
+                DragTarget::Alpha => 6,
             };
             let s = self.scale_factor as f32;
             let (tx, _, tw, _) = Self::slider_physical_rect(i, s);
@@ -646,7 +754,8 @@ impl ColorApp {
                 2 => self.blue,
                 3 => self.hue,
                 4 => self.saturation,
-                _ => self.lightness,
+                5 => self.lightness,
+                _ => self.alpha,
             };
             if (new_val - old).abs() > 0.002 {
                 match i {
@@ -691,12 +800,15 @@ impl ColorApp {
                         self.green = g;
                         self.blue = b;
                     }
-                    _ => {
+                    5 => {
                         self.lightness = new_val;
                         let (r, g, b) = hsl_to_rgb(self.hue, self.saturation, self.lightness);
                         self.red = r;
                         self.green = g;
                         self.blue = b;
+                    }
+                    _ => {
+                        self.alpha = new_val;
                     }
                 }
                 self.needs_rebuild = true;
@@ -709,7 +821,8 @@ impl ColorApp {
             clear_ui::widget::ElementState::Pressed => {
                 let s = self.scale_factor as f32;
                 let (px, py) = (self.cursor_x, self.cursor_y);
-                for i in 0..6 {
+                let num_sliders = if self.with_alpha { 7 } else { 6 };
+                for i in 0..num_sliders {
                     let (tx, ty, tw, th) = Self::slider_physical_rect(i, s);
                     if px >= tx && px <= tx + tw && py >= ty && py <= ty + th {
                         let val = ((px - tx) / tw).clamp(0.0, 1.0);
@@ -760,13 +873,17 @@ impl ColorApp {
                                 self.blue = b;
                                 self.dragging = Some(DragTarget::Saturation);
                             }
-                            _ => {
+                            5 => {
                                 self.lightness = val;
                                 let (r, g, b) = hsl_to_rgb(self.hue, self.saturation, self.lightness);
                                 self.red = r;
                                 self.green = g;
                                 self.blue = b;
                                 self.dragging = Some(DragTarget::Lightness);
+                            }
+                            _ => {
+                                self.alpha = val;
+                                self.dragging = Some(DragTarget::Alpha);
                             }
                         }
                         self.needs_rebuild = true;
@@ -794,7 +911,8 @@ impl ColorApp {
         let (px, py) = (self.cursor_x, self.cursor_y);
         let scroll_amount = scroll_amount_y;
         if scroll_amount.abs() > 0.0001 {
-            for i in 0..6 {
+            let num_sliders = if self.with_alpha { 7 } else { 6 };
+            for i in 0..num_sliders {
                 let (tx, ty, tw, th) = Self::slider_physical_rect(i, s);
                 if px >= tx && px <= tx + tw && py >= ty - 4.0 * s && py <= ty + th + 4.0 * s {
                     let step = 0.02;
@@ -804,7 +922,8 @@ impl ColorApp {
                         2 => self.blue,
                         3 => self.hue,
                         4 => self.saturation,
-                        _ => self.lightness,
+                        5 => self.lightness,
+                        _ => self.alpha,
                     };
                     let new_val = (old_val + scroll_amount * step).clamp(0.0, 1.0);
                     if (new_val - old_val).abs() > 0.0001 {
@@ -850,12 +969,15 @@ impl ColorApp {
                                 self.green = g;
                                 self.blue = b;
                             }
-                            _ => {
+                            5 => {
                                 self.lightness = new_val;
                                 let (r, g, b) = hsl_to_rgb(self.hue, self.saturation, self.lightness);
                                 self.red = r;
                                 self.green = g;
                                 self.blue = b;
+                            }
+                            _ => {
+                                self.alpha = new_val;
                             }
                         }
                         self.needs_rebuild = true;
@@ -961,7 +1083,8 @@ impl CompositorHandler for AppState {
         _surface.set_buffer_scale(scale_factor);
         if let Some(state) = &mut self.state {
             state.scale_factor = scale_factor as f64;
-            state.resize((WIN_W * state.scale_factor as f32) as u32, (WIN_H * state.scale_factor as f32) as u32);
+            let win_h = if state.with_alpha { WIN_H + SLIDER_ROW_H } else { WIN_H };
+            state.resize((WIN_W * state.scale_factor as f32) as u32, (win_h * state.scale_factor as f32) as u32);
             self.redraw = true;
         }
     }
@@ -1246,10 +1369,27 @@ delegate_output!(AppState);
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let (r, g, b) = if args.len() > 1 {
-        parse_hex(&args[1]).unwrap_or((0.5, 0.5, 0.5))
+    let mut with_alpha = false;
+    let mut hex_arg = None;
+    for arg in args.iter().skip(1) {
+        if arg == "--alpha" || arg == "-a" {
+            with_alpha = true;
+        } else {
+            hex_arg = Some(arg.as_str());
+        }
+    }
+
+    let (r, g, b, a) = if let Some(hex) = hex_arg {
+        if let Some((r_parsed, g_parsed, b_parsed, parsed_a)) = parse_hex(hex) {
+            if parsed_a.is_some() {
+                with_alpha = true;
+            }
+            (r_parsed, g_parsed, b_parsed, parsed_a.unwrap_or(1.0))
+        } else {
+            (0.5, 0.5, 0.5, 1.0)
+        }
     } else {
-        (0.5, 0.5, 0.5)
+        (0.5, 0.5, 0.5, 1.0)
     };
 
     let conn = Connection::connect_to_env().unwrap();
@@ -1289,7 +1429,8 @@ fn main() {
         &qh,
         &app.compositor_state,
         &app.xdg_shell_state,
-        r, g, b,
+        r, g, b, a,
+        with_alpha,
         scale,
     ));
 
