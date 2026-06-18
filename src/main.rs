@@ -1,4 +1,3 @@
-use std::sync::Arc;
 use glyphon::{
     Attrs, Buffer, Cache, FontSystem, Metrics, Resolution, SwashCache, TextArea, TextAtlas,
     TextBounds, TextRenderer, Viewport,
@@ -27,7 +26,7 @@ use smithay_client_toolkit::{
 };
 use wayland_client::{
     globals::registry_queue_init,
-    protocol::{wl_keyboard, wl_output, wl_pointer, wl_seat, wl_shm, wl_surface},
+    protocol::{wl_keyboard, wl_output, wl_pointer, wl_seat, wl_surface},
     Connection, QueueHandle, Proxy,
 };
 use calloop::EventLoop;
@@ -473,7 +472,7 @@ impl ColorApp {
                 y: track_y - 1.0 * s,
                 w: (SLIDER_TRACK_W + 2.0) * s,
                 h: (SLIDER_TRACK_H + 2.0) * s,
-                color: [0.08, 0.08, 0.10, 1.0],
+                color: color::color_borders_color(),
             });
 
             if i == 6 {
@@ -1024,6 +1023,13 @@ impl ColorApp {
             label: Some("Encoder"),
         });
 
+        let bg = color::page_low_color();
+        let clear_color = wgpu::Color {
+            r: bg[0] as f64,
+            g: bg[1] as f64,
+            b: bg[2] as f64,
+            a: bg[3] as f64,
+        };
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Render Pass"),
@@ -1031,7 +1037,7 @@ impl ColorApp {
                     view: &view,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.06, g: 0.06, b: 0.08, a: 1.0 }),
+                        load: wgpu::LoadOp::Clear(clear_color),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
