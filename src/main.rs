@@ -3,7 +3,7 @@ use glyphon::{
     Attrs, Buffer, Cache, FontSystem, Metrics, Resolution, SwashCache, TextArea, TextAtlas,
     TextBounds, TextRenderer, Viewport,
 };
-use clear_ui::color;
+use cce_ui::color;
 
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState},
@@ -276,7 +276,7 @@ impl ColorApp {
         window.set_min_size(Some((WIN_W as u32, win_h as u32)));
         window.commit();
 
-        let wayland_handle = Box::leak(Box::new(clear_ui::wayland::WaylandSurfaceHandle {
+        let wayland_handle = Box::leak(Box::new(cce_ui::wayland::WaylandSurfaceHandle {
             display_ptr: conn.backend().display_id().as_ptr() as *mut std::ffi::c_void,
             surface_ptr: surface.id().as_ptr() as *mut std::ffi::c_void,
         }));
@@ -307,7 +307,7 @@ impl ColorApp {
         config.height = height;
         wgpu_surface.configure(&device, &config);
 
-        let shader_code = clear_ui::SHADER;
+        let shader_code = cce_ui::SHADER;
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Shader"),
             source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(shader_code)),
@@ -816,9 +816,9 @@ impl ColorApp {
         }
     }
 
-    fn handle_mouse_input(&mut self, state: clear_ui::widget::ElementState) {
+    fn handle_mouse_input(&mut self, state: cce_ui::widget::ElementState) {
         match state {
-            clear_ui::widget::ElementState::Pressed => {
+            cce_ui::widget::ElementState::Pressed => {
                 let s = self.scale_factor as f32;
                 let (px, py) = (self.cursor_x, self.cursor_y);
                 let num_sliders = if self.with_alpha { 7 } else { 6 };
@@ -898,7 +898,7 @@ impl ColorApp {
                     }
                 }
             }
-            clear_ui::widget::ElementState::Released => {
+            cce_ui::widget::ElementState::Released => {
                 if self.dragging.is_some() {
                     self.dragging = None;
                 }
@@ -1222,7 +1222,7 @@ impl PointerHandler for AppState {
         use smithay_client_toolkit::seat::pointer::PointerEventKind;
         for event in events {
             if let Some(st) = &mut self.state {
-                let (cx, cy) = clear_ui::wayland::scale_pointer_pos(event.position, st.scale_factor);
+                let (cx, cy) = cce_ui::wayland::scale_pointer_pos(event.position, st.scale_factor);
                 match &event.kind {
                     PointerEventKind::Motion { .. } => {
                         st.handle_cursor_moved(cx, cy);
@@ -1232,7 +1232,7 @@ impl PointerHandler for AppState {
                         if *button == 272 {
                             st.cursor_x = cx;
                             st.cursor_y = cy;
-                            st.handle_mouse_input(clear_ui::widget::ElementState::Pressed);
+                            st.handle_mouse_input(cce_ui::widget::ElementState::Pressed);
                             self.redraw = true;
                         }
                     }
@@ -1240,7 +1240,7 @@ impl PointerHandler for AppState {
                         if *button == 272 {
                             st.cursor_x = cx;
                             st.cursor_y = cy;
-                            st.handle_mouse_input(clear_ui::widget::ElementState::Released);
+                            st.handle_mouse_input(cce_ui::widget::ElementState::Released);
                             self.redraw = true;
                         }
                     }
@@ -1422,7 +1422,7 @@ fn main() {
     // Perform a roundtrip to populate output_state with active output scales
     event_queue.roundtrip(&mut app).unwrap();
 
-    let scale = clear_ui::wayland::detect_scale_factor(&app.output_state);
+    let scale = cce_ui::wayland::detect_scale_factor(&app.output_state);
 
     let state = pollster::block_on(ColorApp::new(
         &conn,
