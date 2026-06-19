@@ -269,7 +269,7 @@ impl ColorApp {
         let surface = compositor_state.create_surface(qh);
         surface.set_buffer_scale(scale as i32);
         let window = xdg_shell_state.create_window(surface.clone(), WindowDecorations::None, qh);
-        window.set_title("Clear Color Interface");
+        window.set_title("Color Interface");
         window.set_app_id("cce-color-interface");
         let win_h = if with_alpha { WIN_H + SLIDER_ROW_H } else { WIN_H };
         window.set_min_size(Some((WIN_W as u32, win_h as u32)));
@@ -416,7 +416,7 @@ impl ColorApp {
             color: color::HEADER_BG,
         });
         text_items.push(TextItem {
-            buffer: make_text_buffer(&mut self.font_system, "Clear Color Interface", 14.0 * s),
+            buffer: make_text_buffer(&mut self.font_system, "Color Interface", 14.0 * s),
             x: 12.0 * s, y: 10.0 * s,
             color: glyphon::Color::rgb(0xcc, 0xcc, 0xd4),
         });
