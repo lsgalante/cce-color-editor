@@ -9,19 +9,18 @@ use glyphon::FontSystem;
 use wayland_client::QueueHandle;
 
 
-const HEADER_H: f32 = 36.0;
 const SLIDER_ROW_H: f32 = 36.0;
-const SLIDER_START_Y: f32 = 48.0;
+const SLIDER_START_Y: f32 = 12.0;
 const SLIDER_LABEL_X: f32 = 12.0;
 const SLIDER_TRACK_X: f32 = 32.0;
 const SLIDER_TRACK_W: f32 = 280.0;
 const SLIDER_TRACK_H: f32 = 20.0;
 const SLIDER_VALUE_X: f32 = 320.0;
 const PREVIEW_X: f32 = 12.0;
-const PREVIEW_Y: f32 = 276.0;
+const PREVIEW_Y: f32 = 240.0;
 const PREVIEW_W: f32 = 160.0;
 const PREVIEW_H: f32 = 72.0;
-const BUTTON_Y: f32 = 360.0;
+const BUTTON_Y: f32 = 324.0;
 const BUTTON_H: f32 = 32.0;
 const BUTTON_W: f32 = 100.0;
 const BUTTON_GAP: f32 = 12.0;
@@ -509,9 +508,7 @@ impl ColorApp {
         // 5. Render custom elements
         let mut custom_pc = PageContent::new();
 
-        // Header title
-        custom_pc.rect(cce_ui::color::HEADER_BG, 0.0, 0.0, self.width as f32, HEADER_H);
-        custom_pc.text("Color Interface", 12.0, 10.0, 14.0, [0.8, 0.8, 0.83, 1.0]);
+
 
         if self.with_alpha {
             // Draw checkerboard behind the preview box
