@@ -465,7 +465,7 @@ impl ColorApp {
 
         // 1. Setup root window
         self.root_window.set_rect(0.0, 0.0, self.width as f32, self.height as f32);
-        self.root_window.radius = 12.0;
+        self.root_window.radius = cce_ui::color::window_corner_radius();
         self.root_window.background_color = Some(cce_ui::color::page_low_color());
 
         self.root_window.clear_children(&mut self.ui_context);
