@@ -13,9 +13,7 @@ const SLIDER_ROW_H: f32 = 36.0;
 const SLIDER_START_Y: f32 = 12.0;
 const SLIDER_LABEL_X: f32 = 12.0;
 const SLIDER_TRACK_X: f32 = 32.0;
-const SLIDER_TRACK_W: f32 = 280.0;
 const SLIDER_TRACK_H: f32 = 20.0;
-const SLIDER_VALUE_X: f32 = 320.0;
 const PREVIEW_X: f32 = 12.0;
 const PREVIEW_Y: f32 = 240.0;
 const PREVIEW_W: f32 = 160.0;
@@ -134,9 +132,9 @@ impl Element for ColorSlider {
         if button != MouseButton::Left {
             return false;
         }
-        let (x, y, _, h) = self.rect();
+        let (x, y, w, h) = self.rect();
         let track_x = x + SLIDER_TRACK_X;
-        let track_w = SLIDER_TRACK_W;
+        let track_w = w - SLIDER_TRACK_X - 68.0;
         let track_h = SLIDER_TRACK_H;
         let track_y = y + (h - track_h) / 2.0;
 
@@ -156,9 +154,9 @@ impl Element for ColorSlider {
     }
 
     fn drag_update(&mut self, px: f32, _py: f32) -> bool {
-        let (x, _, _, _) = self.rect();
+        let (x, _, w, _) = self.rect();
         let track_x = x + SLIDER_TRACK_X;
-        let track_w = SLIDER_TRACK_W;
+        let track_w = w - SLIDER_TRACK_X - 68.0;
         let val = ((px - track_x) / track_w).clamp(0.0, 1.0);
         if (val - self.value).abs() > 0.001 {
             self.value = val;
@@ -170,10 +168,10 @@ impl Element for ColorSlider {
 
     fn extra_quads(&self) -> Vec<(f32, f32, f32, f32, [f32; 4])> {
         let mut quads = Vec::new();
-        let (x, y, _, h) = self.rect();
+        let (x, y, w, h) = self.rect();
 
         let track_x = x + SLIDER_TRACK_X;
-        let track_w = SLIDER_TRACK_W;
+        let track_w = w - SLIDER_TRACK_X - 68.0;
         let track_h = SLIDER_TRACK_H;
         let track_y = y + (h - track_h) / 2.0;
 
@@ -209,7 +207,7 @@ impl Element for ColorSlider {
         }
 
         // 3. Draw gradient track segments
-        let n_segments = if self.channel_index == 3 { 30 } else { 10 };
+        let n_segments = (track_w as usize).max(1);
         let get_color_at = |t: f32| -> [f32; 4] {
             match self.channel_index {
                 0 => [t, self.g, self.b, self.a],
@@ -271,7 +269,7 @@ impl Element for ColorSlider {
 
     fn text_labels(&self) -> Vec<TextLabel> {
         let mut labels = Vec::new();
-        let (x, y, _, _) = self.rect();
+        let (x, y, w, _) = self.rect();
         let text_y = y + 8.0;
 
         // Label
@@ -296,7 +294,7 @@ impl Element for ColorSlider {
 
         labels.push(TextLabel {
             text: val_str,
-            x: x + SLIDER_VALUE_X,
+            x: x + w - 60.0,
             y: text_y,
             font_size: 11.0,
             color: [0xcc, 0xcc, 0xdd],
