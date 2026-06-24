@@ -596,6 +596,10 @@ impl ColorApp {
 impl Application for ColorApp {
     type Message = Message;
 
+    fn ui_context(&self) -> Option<&cce_ui::context::UiContext> {
+        Some(&self.ui_context)
+    }
+
     fn new(_qh: &QueueHandle<EngineState<Self>>, _sender: calloop::channel::Sender<Self::Message>) -> Self {
         let args: Vec<String> = std::env::args().collect();
         let mut with_alpha = false;
