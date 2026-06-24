@@ -302,6 +302,39 @@ impl Element for ColorSlider {
 
         labels
     }
+
+    fn mouse_wheel(&mut self, delta: &MouseScrollDelta, px: f32, py: f32, _ctx: &mut UiContext) -> bool {
+        let (x, y, w, h) = self.rect();
+        let track_x = x + SLIDER_TRACK_X;
+        let track_w = w - SLIDER_TRACK_X - 68.0;
+        let track_h = SLIDER_TRACK_H;
+        let track_y = y + (h - track_h) / 2.0;
+
+        if px >= track_x && px <= track_x + track_w && py >= track_y && py <= track_y + track_h {
+            let scroll_amount = match delta {
+                MouseScrollDelta::LineDelta(_x, y) => *y,
+                MouseScrollDelta::PixelDelta(pos) => pos.y as f32 / 120.0,
+            };
+
+            let step = if self.channel_index == 3 {
+                5.0 / 360.0
+            } else if self.channel_index == 6 {
+                0.05
+            } else if self.channel_index >= 4 && self.channel_index <= 5 {
+                0.01
+            } else {
+                1.0 / 255.0
+            };
+
+            let new_value = (self.value + scroll_amount * step).clamp(0.0, 1.0);
+            if (new_value - self.value).abs() > 0.0001 {
+                self.value = new_value;
+                self.just_changed = true;
+                return true;
+            }
+        }
+        false
+    }
 }
 
 // ── AppWidget for flat/rounded rect rendering ────────────────────────
@@ -716,7 +749,19 @@ impl Application for ColorApp {
 
     fn tick(&mut self, _dt: f32, _needs_rebuild: &mut bool) {}
 
-    fn handle_mouse_wheel(&mut self, _delta: &MouseScrollDelta, _pos: LogicalPosition, _needs_rebuild: &mut bool) {}
+    fn handle_mouse_wheel(&mut self, delta: &MouseScrollDelta, pos: LogicalPosition, needs_rebuild: &mut bool) {
+        let px = pos.x;
+        let py = pos.y;
+        for (i, slider) in self.sliders.iter_mut().enumerate() {
+            if slider.mouse_wheel(delta, px, py, &mut self.ui_context) {
+                let val = slider.value;
+                self.update_color_from_slider(i, val);
+                *needs_rebuild = true;
+                self.needs_rebuild = true;
+                break;
+            }
+        }
+    }
 
     fn view(&mut self, _quads: &mut Vec<(f32, f32, f32, f32, [f32; 4])>, size: LogicalSize, scale: f64) {
         if self.needs_rebuild || self.width != size.width as u32 || self.height != size.height as u32 || self.scale_factor != scale {
