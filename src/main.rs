@@ -1,6 +1,6 @@
 use cce_ui::engine::{Application, WindowSettings, LogicalSize, LogicalPosition, EngineState};
 use cce_ui::widget::{
-    Window, Button, Element, UiContext, MouseButton, ElementState, KeyEvent, MouseScrollDelta,
+    Backplate, Button, Element, UiContext, MouseButton, ElementState, KeyEvent, MouseScrollDelta,
     Widget, display::TextLabel,
 };
 use cce_ui::widget::focus::link_parent_child;
@@ -360,7 +360,7 @@ enum Message {
 // ── ColorApp State ───────────────────────────────────────────────────
 
 struct ColorApp {
-    root_window: Window,
+    root_window: Backplate,
     apply_btn: Button,
     cancel_btn: Button,
     sliders: Vec<ColorSlider>,
@@ -496,7 +496,7 @@ impl ColorApp {
 
         // 1. Setup root window
         self.root_window.set_rect(0.0, 0.0, self.width as f32, self.height as f32);
-        self.root_window.radius = cce_ui::color::window_corner_radius();
+        self.root_window.radius = cce_ui::color::backplate_corner_radius();
         self.root_window.background_color = Some(cce_ui::color::page_low_color());
 
         self.root_window.clear_children(&mut self.ui_context);
@@ -663,7 +663,7 @@ impl Application for ColorApp {
         let initial_w = 380;
         let initial_h = if with_alpha { 464 } else { 428 };
 
-        let root_window = Window::new(0.0, 0.0, initial_w as f32, initial_h as f32);
+        let root_window = Backplate::new(0.0, 0.0, initial_w as f32, initial_h as f32);
 
         let apply_btn = Button::new(0.0, 0.0, BUTTON_W, BUTTON_H)
             .with_label("Apply")
