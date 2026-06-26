@@ -305,12 +305,8 @@ impl Element for ColorSlider {
 
     fn mouse_wheel(&mut self, delta: &MouseScrollDelta, px: f32, py: f32, _ctx: &mut UiContext) -> bool {
         let (x, y, w, h) = self.rect();
-        let track_x = x + SLIDER_TRACK_X;
-        let track_w = w - SLIDER_TRACK_X - 68.0;
-        let track_h = SLIDER_TRACK_H;
-        let track_y = y + (h - track_h) / 2.0;
 
-        if px >= track_x && px <= track_x + track_w && py >= track_y && py <= track_y + track_h {
+        if px >= x && px <= x + w && py >= y && py <= y + h {
             let scroll_amount = match delta {
                 MouseScrollDelta::LineDelta(_x, y) => *y,
                 MouseScrollDelta::PixelDelta(pos) => pos.y as f32 / 120.0,
