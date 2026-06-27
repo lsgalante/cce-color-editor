@@ -303,10 +303,19 @@ impl Element for ColorSlider {
         labels
     }
 
-    fn mouse_wheel(&mut self, delta: &MouseScrollDelta, px: f32, py: f32, _ctx: &mut UiContext) -> bool {
+    fn mouse_wheel(&mut self, delta: &MouseScrollDelta, px: f32, py: f32, ctx: &mut UiContext) -> bool {
+        let my_id = self.base.id();
+        if !ctx.scroll_gesture_new {
+            if ctx.scroll_initiate_widget_id != Some(my_id) {
+                return false;
+            }
+        }
         let (x, y, w, h) = self.rect();
 
         if px >= x && px <= x + w && py >= y && py <= y + h {
+            if ctx.scroll_gesture_new {
+                ctx.scroll_initiate_widget_id = Some(my_id);
+            }
             let scroll_amount = match delta {
                 MouseScrollDelta::LineDelta(_x, y) => *y,
                 MouseScrollDelta::PixelDelta(pos) => pos.y as f32 / 120.0,
@@ -326,8 +335,8 @@ impl Element for ColorSlider {
             if (new_value - self.value).abs() > 0.0001 {
                 self.value = new_value;
                 self.just_changed = true;
-                return true;
             }
+            return true;
         }
         false
     }
