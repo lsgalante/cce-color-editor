@@ -496,6 +496,7 @@ impl ColorApp {
     }
 
     fn rebuild_layout(&mut self) {
+        self.ui_context.clear_hierarchy();
         let mut widgets = Vec::new();
         let mut text_items = Vec::new();
 
@@ -625,6 +626,7 @@ impl ColorApp {
 
         self.widgets = widgets;
         self.text_items = text_items;
+        self.ui_context.clear_dirty();
         self.needs_rebuild = false;
     }
 }
