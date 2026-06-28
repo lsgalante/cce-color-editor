@@ -7,6 +7,7 @@ use cce_ui::widget::focus::link_parent_child;
 use cce_ui::layout::RenderTarget;
 use glyphon::FontSystem;
 use wayland_client::QueueHandle;
+use std::io::IsTerminal;
 
 
 const SLIDER_ROW_H: f32 = 36.0;
@@ -378,6 +379,7 @@ struct ColorApp {
     lightness: f32,
     alpha: f32,
     with_alpha: bool,
+    expecting_output: bool,
 
     font_system: FontSystem,
     cursor_x: f32,
@@ -508,8 +510,10 @@ impl ColorApp {
         self.root_window.clear_children(&mut self.ui_context);
 
         // 2. Link child widgets
-        link_parent_child(&mut self.root_window, &mut self.apply_btn, &mut self.ui_context);
-        link_parent_child(&mut self.root_window, &mut self.cancel_btn, &mut self.ui_context);
+        if self.expecting_output {
+            link_parent_child(&mut self.root_window, &mut self.apply_btn, &mut self.ui_context);
+            link_parent_child(&mut self.root_window, &mut self.cancel_btn, &mut self.ui_context);
+        }
         for slider in &mut self.sliders {
             link_parent_child(&mut self.root_window, slider, &mut self.ui_context);
         }
@@ -522,8 +526,10 @@ impl ColorApp {
         let apply_x = PREVIEW_X;
         let cancel_x = PREVIEW_X + BUTTON_W + BUTTON_GAP;
 
-        self.apply_btn.set_rect(apply_x, button_y, BUTTON_W, BUTTON_H);
-        self.cancel_btn.set_rect(cancel_x, button_y, BUTTON_W, BUTTON_H);
+        if self.expecting_output {
+            self.apply_btn.set_rect(apply_x, button_y, BUTTON_W, BUTTON_H);
+            self.cancel_btn.set_rect(cancel_x, button_y, BUTTON_W, BUTTON_H);
+        }
 
         for (i, slider) in self.sliders.iter_mut().enumerate() {
             let row_y = SLIDER_START_Y + i as f32 * SLIDER_ROW_H;
@@ -667,8 +673,14 @@ impl Application for ColorApp {
 
         let (hue, saturation, lightness) = rgb_to_hsl(r, g, b);
 
+        let expecting_output = !std::io::stdout().is_terminal();
+
         let initial_w = 380;
-        let initial_h = if with_alpha { 464 } else { 428 };
+        let initial_h = if expecting_output {
+            if with_alpha { 464 } else { 428 }
+        } else {
+            if with_alpha { 360 } else { 324 }
+        };
 
         let root_window = Backplate::new(0.0, 0.0, initial_w as f32, initial_h as f32);
 
@@ -711,6 +723,7 @@ impl Application for ColorApp {
             lightness,
             alpha: a,
             with_alpha,
+            expecting_output,
             font_system,
             cursor_x: 0.0,
             cursor_y: 0.0,
@@ -731,7 +744,11 @@ impl Application for ColorApp {
     }
 
     fn settings(&self) -> WindowSettings {
-        let win_h = if self.with_alpha { 464 } else { 428 };
+        let win_h = if self.expecting_output {
+            if self.with_alpha { 464 } else { 428 }
+        } else {
+            if self.with_alpha { 360 } else { 324 }
+        };
         WindowSettings {
             title: "Color Interface".to_string(),
             app_id: "cce-color-interface".to_string(),
@@ -829,8 +846,10 @@ impl Application for ColorApp {
                 self.needs_rebuild = true;
             }
         } else {
-            let _ = self.apply_btn.cursor_moved(pos.x, pos.y, &mut self.ui_context);
-            let _ = self.cancel_btn.cursor_moved(pos.x, pos.y, &mut self.ui_context);
+            if self.expecting_output {
+                let _ = self.apply_btn.cursor_moved(pos.x, pos.y, &mut self.ui_context);
+                let _ = self.cancel_btn.cursor_moved(pos.x, pos.y, &mut self.ui_context);
+            }
             for slider in &mut self.sliders {
                 let _ = slider.cursor_moved(pos.x, pos.y, &mut self.ui_context);
             }
@@ -849,22 +868,24 @@ impl Application for ColorApp {
 
         let mut handled = false;
 
-        if self.apply_btn.mouse_input(button, state, px, py, &mut self.ui_context) {
-            handled = true;
-            *needs_rebuild = true;
-            self.needs_rebuild = true;
-        }
-        if self.cancel_btn.mouse_input(button, state, px, py, &mut self.ui_context) {
-            handled = true;
-            *needs_rebuild = true;
-            self.needs_rebuild = true;
-        }
+        if self.expecting_output {
+            if self.apply_btn.mouse_input(button, state, px, py, &mut self.ui_context) {
+                handled = true;
+                *needs_rebuild = true;
+                self.needs_rebuild = true;
+            }
+            if self.cancel_btn.mouse_input(button, state, px, py, &mut self.ui_context) {
+                handled = true;
+                *needs_rebuild = true;
+                self.needs_rebuild = true;
+            }
 
-        if self.apply_btn.take_click() {
-            return Some(Message::Apply);
-        }
-        if self.cancel_btn.take_click() {
-            return Some(Message::Cancel);
+            if self.apply_btn.take_click() {
+                return Some(Message::Apply);
+            }
+            if self.cancel_btn.take_click() {
+                return Some(Message::Cancel);
+            }
         }
 
         if state == ElementState::Released {
