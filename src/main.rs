@@ -1,7 +1,7 @@
 use cce_ui::engine::{Application, WindowSettings, LogicalSize, LogicalPosition, EngineState};
 use cce_ui::widget::{
     Backplate, Button, Element, UiContext, MouseButton, ElementState, KeyEvent, MouseScrollDelta,
-    Widget, display::TextLabel,
+    Widget, display::TextLabel, Event,
 };
 use cce_ui::widget::focus::link_parent_child;
 use cce_ui::layout::RenderTarget;
@@ -759,14 +759,28 @@ impl Application for ColorApp {
     fn handle_mouse_wheel(&mut self, delta: &MouseScrollDelta, pos: LogicalPosition, needs_rebuild: &mut bool) {
         let px = pos.x;
         let py = pos.y;
-        for (i, slider) in self.sliders.iter_mut().enumerate() {
-            if slider.mouse_wheel(delta, px, py, &mut self.ui_context) {
-                let val = slider.value;
-                self.update_color_from_slider(i, val);
-                *needs_rebuild = true;
-                self.needs_rebuild = true;
-                break;
+        let event = Event::MouseWheel {
+            delta: *delta,
+            x: px,
+            y: py,
+            local_x: px,
+            local_y: py,
+        };
+        let root_ptr = self.root_window.as_ptr_mut();
+        let mut changed_slider = None;
+        if self.ui_context.propagate_event(&event, root_ptr) {
+            for (i, slider) in self.sliders.iter_mut().enumerate() {
+                if slider.just_changed {
+                    slider.just_changed = false;
+                    changed_slider = Some((i, slider.value));
+                    break;
+                }
             }
+        }
+        if let Some((i, val)) = changed_slider {
+            self.update_color_from_slider(i, val);
+            *needs_rebuild = true;
+            self.needs_rebuild = true;
         }
     }
 
