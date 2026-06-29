@@ -749,7 +749,7 @@ impl Application for ColorApp {
         };
         WindowSettings {
             title: "Color Interface".to_string(),
-            app_id: "cce-color-interface".to_string(),
+            app_id: "cce-colors".to_string(),
             width: 380,
             height: win_h,
             fullscreen: false,
