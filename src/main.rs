@@ -981,25 +981,13 @@ fn hue_to_rgb(p: f32, q: f32, mut t: f32) -> f32 {
 }
 
 fn parse_hex(hex: &str) -> Option<(f32, f32, f32, Option<f32>)> {
-    let s = hex.trim_start_matches('#');
-    if s.len() == 6 {
-        u32::from_str_radix(s, 16).ok().map(|v| {
-            let r = ((v >> 16) & 0xFF) as f32 / 255.0;
-            let g = ((v >> 8) & 0xFF) as f32 / 255.0;
-            let b = (v & 0xFF) as f32 / 255.0;
-            (r, g, b, None)
-        })
-    } else if s.len() == 8 {
-        u32::from_str_radix(s, 16).ok().map(|v| {
-            let r = ((v >> 24) & 0xFF) as f32 / 255.0;
-            let g = ((v >> 16) & 0xFF) as f32 / 255.0;
-            let b = ((v >> 8) & 0xFF) as f32 / 255.0;
-            let a = (v & 0xFF) as f32 / 255.0;
-            (r, g, b, Some(a))
-        })
-    } else {
-        None
-    }
+    let has_alpha = hex
+        .trim_matches(|c| c == '"' || c == '\'' || c == ' ')
+        .trim_start_matches('#')
+        .len()
+        >= 8;
+    cce_ui::color::parse_hex_rgba(hex)
+        .map(|[r, g, b, a]| (r, g, b, if has_alpha { Some(a) } else { None }))
 }
 
 // ── Main Entrypoint ──────────────────────────────────────────────────
