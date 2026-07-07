@@ -706,7 +706,7 @@ impl Application for ColorApp {
             sliders.push(ColorSlider::new("A", 6));
         }
 
-        let font_system = FontSystem::new();
+        let font_system = cce_ui::create_font_system_with_system_fonts();
 
         let mut app = Self {
             root_window,
