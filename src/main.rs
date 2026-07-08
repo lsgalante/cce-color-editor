@@ -822,6 +822,26 @@ impl Application for ColorApp {
         }
     }
 
+    fn display_list(&mut self) -> Option<cce_ui::scene::paint::DisplayList> {
+        // Phase 3 single paint path (flat-list bridge). rebuild_layout flattens the UI (incl. color
+        // ramps/gradients) into self.widgets, which view_rounded_quads runs above. CCE_LEGACY_PAINT
+        // falls back.
+        if std::env::var("CCE_LEGACY_PAINT").is_ok() {
+            return None;
+        }
+        use cce_ui::scene::layout::Rect;
+        let mut pc = cce_ui::scene::paint::PaintCtx::new();
+        for w in &self.widgets {
+            let rect = Rect { x: w.x, y: w.y, width: w.w, height: w.h };
+            if w.radius > 0.1 {
+                pc.rounded_rect(rect, w.radius, w.corners, w.color);
+            } else {
+                pc.quad(rect, w.color);
+            }
+        }
+        Some(pc.finish())
+    }
+
     fn text_items(&self) -> &[cce_ui::widget::TextItem] {
         &self.text_items
     }
