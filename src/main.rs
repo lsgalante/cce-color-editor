@@ -367,8 +367,8 @@ enum Message {
 
 struct ColorApp {
     root_window: Backplate,
-    apply_btn: Button,
-    cancel_btn: Button,
+    apply_btn: cce_ui::widget::Adapted<cce_ui::widget::Button>,
+    cancel_btn: cce_ui::widget::Adapted<cce_ui::widget::Button>,
     sliders: Vec<ColorSlider>,
 
     red: f32,
