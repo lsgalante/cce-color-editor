@@ -822,7 +822,7 @@ impl Application for ColorApp {
         }
     }
 
-    fn display_list(&mut self) -> Option<cce_ui::scene::paint::DisplayList> {
+    fn display_list(&mut self, _size: cce_ui::engine::LogicalSize, _scale: f64) -> Option<cce_ui::scene::paint::DisplayList> {
         // Phase 3 single paint path (flat-list bridge). rebuild_layout flattens the UI (incl. color
         // ramps/gradients) into self.widgets, which view_rounded_quads runs above. CCE_LEGACY_PAINT
         // falls back.
