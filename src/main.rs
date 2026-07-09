@@ -5,7 +5,6 @@ use cce_ui::widget::{
 };
 use cce_ui::widget::focus::link_parent_child;
 use cce_ui::layout::RenderTarget;
-use glyphon::FontSystem;
 use wayland_client::QueueHandle;
 use std::io::IsTerminal;
 
@@ -381,7 +380,6 @@ struct ColorApp {
     with_alpha: bool,
     expecting_output: bool,
 
-    font_system: FontSystem,
     cursor_x: f32,
     cursor_y: f32,
     dragging: Option<usize>,
@@ -392,7 +390,9 @@ struct ColorApp {
     ui_context: UiContext,
 
     widgets: Vec<AppWidget>,
-    text_items: Vec<cce_ui::widget::TextItem>,
+    // (content, font_size, x, y, color, font, bounds) — the PageContent text tuples,
+    // emitted as display-list Text prims.
+    texts: Vec<(String, f32, f32, f32, [f32; 4], Option<String>, Option<[f32; 4]>)>,
 }
 
 impl ColorApp {
@@ -500,7 +500,7 @@ impl ColorApp {
     fn rebuild_layout(&mut self) {
         self.ui_context.clear_hierarchy();
         let mut widgets = Vec::new();
-        let mut text_items = Vec::new();
+        let mut texts = Vec::new();
 
         // 1. Setup root window
         self.root_window.set_rect(0.0, 0.0, self.width as f32, self.height as f32);
@@ -598,7 +598,7 @@ impl ColorApp {
         );
 
         // 6. Gather all quads and text labels
-        for pc_part in &[window_pc, custom_pc] {
+        for pc_part in [window_pc, custom_pc] {
             for (c, x, y, w, h, r, corners) in &pc_part.rects {
                 widgets.push(AppWidget {
                     x: *x,
@@ -610,26 +610,11 @@ impl ColorApp {
                     corners: *corners,
                 });
             }
-            for (text, size, x, y, col, font, bounds) in &pc_part.texts {
-                text_items.push(cce_ui::widget::TextItem::new(
-                    &mut self.font_system,
-                    text,
-                    *size,
-                    *x,
-                    *y,
-                    glyphon::Color::rgb(
-                        (col[0] * 255.0) as u8,
-                        (col[1] * 255.0) as u8,
-                        (col[2] * 255.0) as u8,
-                    ),
-                    font.as_deref(),
-                    *bounds,
-                ));
-            }
+            texts.extend(pc_part.texts);
         }
 
         self.widgets = widgets;
-        self.text_items = text_items;
+        self.texts = texts;
         self.ui_context.clear_dirty();
         self.needs_rebuild = false;
     }
@@ -706,8 +691,6 @@ impl Application for ColorApp {
             sliders.push(ColorSlider::new("A", 6));
         }
 
-        let font_system = cce_ui::create_font_system_with_system_fonts();
-
         let mut app = Self {
             root_window,
             apply_btn,
@@ -722,7 +705,6 @@ impl Application for ColorApp {
             alpha: a,
             with_alpha,
             expecting_output,
-            font_system,
             cursor_x: 0.0,
             cursor_y: 0.0,
             dragging: None,
@@ -732,7 +714,7 @@ impl Application for ColorApp {
             needs_rebuild: true,
             ui_context: UiContext::new(),
             widgets: Vec::new(),
-            text_items: Vec::new(),
+            texts: Vec::new(),
         };
 
         app.sync_slider_values();
@@ -799,35 +781,15 @@ impl Application for ColorApp {
         }
     }
 
-    fn view(&mut self, _quads: &mut Vec<(f32, f32, f32, f32, [f32; 4])>, size: LogicalSize, scale: f64) {
+    fn display_list(&mut self, size: LogicalSize, scale: f64) -> Option<cce_ui::scene::paint::DisplayList> {
+        // Phase 6 single paint path: the whole frame — geometry and text — is this one list.
+        // rebuild_layout flattens the UI (incl. color ramps/gradients) into self.widgets/self.texts.
         if self.needs_rebuild || self.width != size.width as u32 || self.height != size.height as u32 || self.scale_factor != scale {
             self.width = size.width as u32;
             self.height = size.height as u32;
             self.scale_factor = scale;
             cce_ui::scale::set_scale_factor(scale as f32);
             self.rebuild_layout();
-        }
-    }
-
-    fn view_rounded_quads(&mut self, quads: &mut Vec<(f32, f32, f32, f32, f32, [f32; 4], (bool, bool, bool, bool))>, size: LogicalSize, scale: f64) {
-        if self.needs_rebuild || self.width != size.width as u32 || self.height != size.height as u32 || self.scale_factor != scale {
-            self.width = size.width as u32;
-            self.height = size.height as u32;
-            self.scale_factor = scale;
-            cce_ui::scale::set_scale_factor(scale as f32);
-            self.rebuild_layout();
-        }
-        for w in &self.widgets {
-            quads.push((w.x, w.y, w.w, w.h, w.radius, w.color, w.corners));
-        }
-    }
-
-    fn display_list(&mut self, _size: cce_ui::engine::LogicalSize, _scale: f64) -> Option<cce_ui::scene::paint::DisplayList> {
-        // Phase 3 single paint path (flat-list bridge). rebuild_layout flattens the UI (incl. color
-        // ramps/gradients) into self.widgets, which view_rounded_quads runs above. CCE_LEGACY_PAINT
-        // falls back.
-        if std::env::var("CCE_LEGACY_PAINT").is_ok() {
-            return None;
         }
         use cce_ui::scene::layout::Rect;
         let mut pc = cce_ui::scene::paint::PaintCtx::new();
@@ -839,11 +801,26 @@ impl Application for ColorApp {
                 pc.quad(rect, w.color);
             }
         }
+        for (text, font_size, x, y, col, font, bounds) in &self.texts {
+            pc.text_with(
+                text.clone(),
+                *x,
+                *y,
+                *font_size,
+                [
+                    (col[0] * 255.0) as u8,
+                    (col[1] * 255.0) as u8,
+                    (col[2] * 255.0) as u8,
+                ],
+                font.clone(),
+                *bounds,
+            );
+        }
         Some(pc.finish())
     }
 
-    fn text_items(&self) -> &[cce_ui::widget::TextItem] {
-        &self.text_items
+    fn display_list_text(&self) -> bool {
+        true
     }
 
     fn clear_color(&self) -> [f32; 4] {
