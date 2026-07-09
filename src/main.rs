@@ -1,9 +1,8 @@
 use cce_ui::engine::{Application, WindowSettings, LogicalSize, LogicalPosition, EngineState};
 use cce_ui::widget::{
-    Backplate, Button, Element, UiContext, MouseButton, ElementState, KeyEvent, MouseScrollDelta,
+    Button, Element, UiContext, MouseButton, ElementState, KeyEvent, MouseScrollDelta,
     Widget, display::TextLabel, Event,
 };
-use cce_ui::widget::focus::link_parent_child;
 use cce_ui::layout::RenderTarget;
 use wayland_client::QueueHandle;
 use std::io::IsTerminal;
@@ -365,7 +364,6 @@ enum Message {
 // ── ColorApp State ───────────────────────────────────────────────────
 
 struct ColorApp {
-    root_window: Backplate,
     apply_btn: cce_ui::widget::Adapted<cce_ui::widget::Button>,
     cancel_btn: cce_ui::widget::Adapted<cce_ui::widget::Button>,
     sliders: Vec<ColorSlider>,
@@ -502,21 +500,8 @@ impl ColorApp {
         let mut widgets = Vec::new();
         let mut texts = Vec::new();
 
-        // 1. Setup root window
-        self.root_window.set_rect(0.0, 0.0, self.width as f32, self.height as f32);
-
-        self.root_window.clear_children(&mut self.ui_context);
-
-        // 2. Link child widgets
-        if self.expecting_output {
-            link_parent_child(&mut self.root_window, &mut self.apply_btn, &mut self.ui_context);
-            link_parent_child(&mut self.root_window, &mut self.cancel_btn, &mut self.ui_context);
-        }
-        for slider in &mut self.sliders {
-            link_parent_child(&mut self.root_window, slider, &mut self.ui_context);
-        }
-
-        // 3. Layout elements
+        // 1. Layout elements (root Backplate DISSOLVED: widgets are top-level; its plate
+        // is emitted below as the first tuple)
         let preview_y_offset = if self.with_alpha { SLIDER_ROW_H } else { 0.0 };
         let preview_y = PREVIEW_Y + preview_y_offset;
         let button_y = BUTTON_Y + preview_y_offset;
@@ -534,17 +519,36 @@ impl ColorApp {
             slider.set_rect(0.0, row_y, self.width as f32, SLIDER_ROW_H);
         }
 
-        // 4. Render window widget recursively
+        // 2. Each top-level widget rendered through the same immediate-mode path the root
+        // recursion used — replicating the legacy TUPLE ORDER exactly: the sliders' plain
+        // gradient quads first, then the dissolved root Backplate's translucent plate OVER
+        // them (the legacy aggregate emitted all plain quads, then the rounded root bg —
+        // the app's muted pastel look depends on that wash), then the rounded buttons.
         let mut window_pc = PageContent::new();
-        cce_ui::layout::render_widget(
-            &mut window_pc,
-            &mut self.root_window,
-            0.0,
-            0.0,
-            self.width as f32,
-            self.height as f32,
-            &mut self.ui_context,
-        );
+        {
+            let self_ptr = self as *mut Self;
+            unsafe {
+                for slider in (*self_ptr).sliders.iter_mut() {
+                    let (x, y, w, h) = slider.rect();
+                    cce_ui::layout::render_widget(&mut window_pc, slider, x, y, w, h, &mut self.ui_context);
+                }
+            }
+            // Backplate::color() default: page-low at the active backplate opacity.
+            let mut c = cce_ui::color::page_low_color();
+            if c[3] > 0.001 {
+                c[3] = cce_ui::color::active_backplate_opacity();
+            }
+            let radius = cce_ui::colors::backplate_corner_radius();
+            window_pc.rects.push((c, 0.0, 0.0, self.width as f32, self.height as f32, radius.max(0.0), (radius > 0.1, radius > 0.1, radius > 0.1, radius > 0.1)));
+            unsafe {
+                if self.expecting_output {
+                    let (x, y, w, h) = (*self_ptr).apply_btn.rect();
+                    cce_ui::layout::render_widget(&mut window_pc, &mut (*self_ptr).apply_btn, x, y, w, h, &mut self.ui_context);
+                    let (x, y, w, h) = (*self_ptr).cancel_btn.rect();
+                    cce_ui::layout::render_widget(&mut window_pc, &mut (*self_ptr).cancel_btn, x, y, w, h, &mut self.ui_context);
+                }
+            }
+        }
 
         // 5. Render custom elements
         let mut custom_pc = PageContent::new();
@@ -665,7 +669,6 @@ impl Application for ColorApp {
             if with_alpha { 360 } else { 324 }
         };
 
-        let root_window = Backplate::new(0.0, 0.0, initial_w as f32, initial_h as f32);
 
         let apply_btn = Button::new(0.0, 0.0, BUTTON_W, BUTTON_H)
             .with_label("Apply")
@@ -692,7 +695,6 @@ impl Application for ColorApp {
         }
 
         let mut app = Self {
-            root_window,
             apply_btn,
             cancel_btn,
             sliders,
@@ -763,9 +765,22 @@ impl Application for ColorApp {
             local_x: px,
             local_y: py,
         };
-        let root_ptr = self.root_window.as_ptr_mut();
+        // Root Backplate dissolved: propagate to each slider directly (they own
+        // mouse_wheel; the buttons never scrolled).
         let mut changed_slider = None;
-        if self.ui_context.propagate_event(&event, root_ptr) {
+        let mut any = false;
+        {
+            let self_ptr = self as *mut Self;
+            unsafe {
+                for slider in (*self_ptr).sliders.iter_mut() {
+                    if self.ui_context.propagate_event(&event, slider.as_ptr_mut()) {
+                        any = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if any {
             for (i, slider) in self.sliders.iter_mut().enumerate() {
                 if slider.just_changed {
                     slider.just_changed = false;
@@ -821,6 +836,11 @@ impl Application for ColorApp {
 
     fn display_list_text(&self) -> bool {
         true
+    }
+
+    fn is_movable_backplate_at(&self, px: f32, py: f32) -> bool {
+        // Root Backplate dissolved: the surface itself is the movable plate.
+        self.ui_context.drag_allowed_at(px, py)
     }
 
     fn clear_color(&self) -> [f32; 4] {
