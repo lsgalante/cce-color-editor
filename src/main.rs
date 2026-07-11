@@ -103,6 +103,15 @@ impl ColorSlider {
 impl Element for ColorSlider {
     cce_ui::impl_widget_base!(ColorSlider);
 
+    // Leaf legacy widget: own labels via paint_self (cce-ui's default no longer drains
+    // the text getters; render_widget's text pass reads the walk).
+    fn paint_self(&self, ui: &cce_ui::context::UiContext, ctx: &mut cce_ui::scene::paint::PaintCtx) {
+        cce_ui::scene::painter::paint_legacy_leaf(
+            self, ui, ctx,
+            cce_ui::scene::painter::fonted_leaf_labels(self, ui, self.own_labels()),
+        );
+    }
+
     fn color(&self) -> [f32; 4] {
         [0.0, 0.0, 0.0, 0.0]
     }
@@ -266,41 +275,6 @@ impl Element for ColorSlider {
         quads
     }
 
-    fn text_labels(&self) -> Vec<TextLabel> {
-        let mut labels = Vec::new();
-        let (x, y, w, _) = self.rect();
-        let text_y = y + 8.0;
-
-        // Label
-        labels.push(TextLabel {
-            text: self.label.clone(),
-            x: x + SLIDER_LABEL_X,
-            y: text_y,
-            font_size: 12.0,
-            color: [0xaa, 0xaa, 0xbb],
-        });
-
-        // Value readout
-        let val_str = if self.channel_index < 3 {
-            format!("{}", (self.value * 255.0) as u8)
-        } else if self.channel_index == 3 {
-            format!("{}°", (self.value * 360.0).round() as u16)
-        } else if self.channel_index < 6 {
-            format!("{}%", (self.value * 100.0).round() as u8)
-        } else {
-            format!("{}", (self.value * 255.0).round() as u8)
-        };
-
-        labels.push(TextLabel {
-            text: val_str,
-            x: x + w - 60.0,
-            y: text_y,
-            font_size: 11.0,
-            color: [0xcc, 0xcc, 0xdd],
-        });
-
-        labels
-    }
 
     fn mouse_wheel(&mut self, delta: &MouseScrollDelta, px: f32, py: f32, ctx: &mut UiContext) -> bool {
         let my_id = self.base.id();
@@ -1011,4 +985,42 @@ fn parse_hex(hex: &str) -> Option<(f32, f32, f32, Option<f32>)> {
 
 fn main() {
     cce_ui::engine::run::<ColorApp>();
+}
+
+impl ColorSlider {
+    fn own_labels(&self) -> Vec<TextLabel> {
+        let mut labels = Vec::new();
+        let (x, y, w, _) = self.rect();
+        let text_y = y + 8.0;
+
+        // Label
+        labels.push(TextLabel {
+            text: self.label.clone(),
+            x: x + SLIDER_LABEL_X,
+            y: text_y,
+            font_size: 12.0,
+            color: [0xaa, 0xaa, 0xbb],
+        });
+
+        // Value readout
+        let val_str = if self.channel_index < 3 {
+            format!("{}", (self.value * 255.0) as u8)
+        } else if self.channel_index == 3 {
+            format!("{}°", (self.value * 360.0).round() as u16)
+        } else if self.channel_index < 6 {
+            format!("{}%", (self.value * 100.0).round() as u8)
+        } else {
+            format!("{}", (self.value * 255.0).round() as u8)
+        };
+
+        labels.push(TextLabel {
+            text: val_str,
+            x: x + w - 60.0,
+            y: text_y,
+            font_size: 11.0,
+            color: [0xcc, 0xcc, 0xdd],
+        });
+
+        labels
+    }
 }
