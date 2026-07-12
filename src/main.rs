@@ -347,7 +347,6 @@ struct ColorApp {
 
     cursor_x: f32,
     cursor_y: f32,
-    dragging: Option<usize>,
     width: u32,
     height: u32,
     scale_factor: f64,
@@ -676,7 +675,6 @@ impl Application for ColorApp {
             expecting_output,
             cursor_x: 0.0,
             cursor_y: 0.0,
-            dragging: None,
             width: initial_w,
             height: initial_h,
             scale_factor: 1.0,
@@ -819,25 +817,35 @@ impl Application for ColorApp {
         self.cursor_y = pos.y;
         cce_ui::widget::hover_animation::set_cursor_pos(pos.x, pos.y);
 
-        if let Some(i) = self.dragging {
-            let slider = &mut self.sliders[i];
-            if slider.drag_update(pos.x, pos.y) {
-                let val = slider.value;
-                self.update_color_from_slider(i, val);
-                *needs_rebuild = true;
-                self.needs_rebuild = true;
-            }
-        } else {
-            if self.expecting_output {
-                let _ = self.apply_btn.cursor_moved(pos.x, pos.y, &mut self.ui_context);
-                let _ = self.cancel_btn.cursor_moved(pos.x, pos.y, &mut self.ui_context);
-            }
-            for slider in &mut self.sliders {
-                let _ = slider.cursor_moved(pos.x, pos.y, &mut self.ui_context);
-            }
-            *needs_rebuild = true;
-            self.needs_rebuild = true;
+        // Routed dispatch (6bd shrink): one PointerMove through the router per root —
+        // hover bookkeeping plus the router's drag forwarding (replaces the app-held
+        // dragging index; DragUpdate reaches the drag target even off-rect).
+        let ev = Event::PointerMove { x: pos.x, y: pos.y, local_x: pos.x, local_y: pos.y };
+        if self.expecting_output {
+            let apply = self.apply_btn.as_ptr_mut();
+            self.ui_context.propagate_event(&ev, apply);
+            let cancel = self.cancel_btn.as_ptr_mut();
+            self.ui_context.propagate_event(&ev, cancel);
         }
+        let slider_ptrs: Vec<_> = self.sliders.iter_mut().map(|s| s.as_ptr_mut()).collect();
+        for ptr in slider_ptrs {
+            self.ui_context.propagate_event(&ev, ptr);
+        }
+        // Drain the drag's value change like the wheel path does.
+        let mut changed_slider = None;
+        for (i, slider) in self.sliders.iter_mut().enumerate() {
+            if slider.just_changed {
+                slider.just_changed = false;
+                changed_slider = Some((i, slider.value));
+                break;
+            }
+        }
+        if let Some((i, val)) = changed_slider {
+            self.update_color_from_slider(i, val);
+        }
+        // Legacy parity: every pointer move rebuilt (hover fades ride the rebuild).
+        *needs_rebuild = true;
+        self.needs_rebuild = true;
     }
 
     fn handle_mouse_input(&mut self, button: MouseButton, state: ElementState, pos: LogicalPosition, needs_rebuild: &mut bool) -> Option<Self::Message> {
@@ -845,18 +853,22 @@ impl Application for ColorApp {
             return None;
         }
 
-        let px = pos.x;
-        let py = pos.y;
-
+        // Routed dispatch (6bd shrink): the router hit-gates presses, records the drag
+        // target, and delivers DragEnd on release; the app keeps the take_click /
+        // just_changed drains.
+        let ev = Event::MouseButton { button, state, x: pos.x, y: pos.y, local_x: pos.x, local_y: pos.y };
+        let was_dragging = self.ui_context.is_dragging;
         let mut handled = false;
 
         if self.expecting_output {
-            if self.apply_btn.mouse_input(button, state, px, py, &mut self.ui_context) {
+            let apply = self.apply_btn.as_ptr_mut();
+            if self.ui_context.propagate_event(&ev, apply) {
                 handled = true;
                 *needs_rebuild = true;
                 self.needs_rebuild = true;
             }
-            if self.cancel_btn.mouse_input(button, state, px, py, &mut self.ui_context) {
+            let cancel = self.cancel_btn.as_ptr_mut();
+            if self.ui_context.propagate_event(&ev, cancel) {
                 handled = true;
                 *needs_rebuild = true;
                 self.needs_rebuild = true;
@@ -870,30 +882,33 @@ impl Application for ColorApp {
             }
         }
 
-        if state == ElementState::Released {
-            if let Some(i) = self.dragging {
-                self.sliders[i].drag_end();
-                self.dragging = None;
+        if !handled {
+            let slider_ptrs: Vec<_> = self.sliders.iter_mut().map(|s| s.as_ptr_mut()).collect();
+            for ptr in slider_ptrs {
+                if self.ui_context.propagate_event(&ev, ptr) {
+                    break;
+                }
+            }
+            let mut changed_slider = None;
+            for (i, slider) in self.sliders.iter_mut().enumerate() {
+                if slider.just_changed {
+                    slider.just_changed = false;
+                    changed_slider = Some((i, slider.value));
+                    break;
+                }
+            }
+            if let Some((i, val)) = changed_slider {
+                self.update_color_from_slider(i, val);
                 *needs_rebuild = true;
                 self.needs_rebuild = true;
             }
         }
 
-        if !handled {
-            for (i, slider) in self.sliders.iter_mut().enumerate() {
-                if slider.mouse_input(button, state, px, py, &mut self.ui_context) {
-                    if slider.dragging {
-                        self.dragging = Some(i);
-                    } else {
-                        self.dragging = None;
-                    }
-                    let val = slider.value;
-                    self.update_color_from_slider(i, val);
-                    *needs_rebuild = true;
-                    self.needs_rebuild = true;
-                    break;
-                }
-            }
+        // The router delivered DragEnd on the first propagate call of a release; rebuild
+        // so the thumb sheds its dragging state, as the legacy drag_end path did.
+        if state == ElementState::Released && was_dragging {
+            *needs_rebuild = true;
+            self.needs_rebuild = true;
         }
 
         None
