@@ -1,9 +1,11 @@
 use cce_ui::engine::{Application, WindowSettings, LogicalSize, LogicalPosition, EngineState};
 use cce_ui::widget::{
-    Button, Element, UiContext, MouseButton, ElementState, KeyEvent, MouseScrollDelta,
-    Widget, display::TextLabel, Event,
+    Adapted, Button, Element, EventCtx, UiContext, MouseButton, ElementState, KeyEvent,
+    MouseScrollDelta, Event,
 };
 use cce_ui::layout::RenderTarget;
+use cce_ui::scene::layout::{Rect, Size};
+use cce_ui::scene::paint::PaintCtx;
 use wayland_client::QueueHandle;
 use std::io::IsTerminal;
 
@@ -68,11 +70,10 @@ impl cce_ui::layout::RenderTarget for PageContent {
     }
 }
 
-// ── Custom ColorSlider Widget ────────────────────────────────────────
+// ── Custom ColorSlider Widget (narrow traits, wrapped in Adapted) ────
 
 #[derive(Debug, Clone)]
 struct ColorSlider {
-    base: Widget,
     value: f32,
     channel_index: usize,
     dragging: bool,
@@ -85,9 +86,8 @@ struct ColorSlider {
 }
 
 impl ColorSlider {
-    pub fn new(label: &str, channel_index: usize) -> Self {
-        Self {
-            base: Widget::new_rect(0.0, 0.0, 0.0, 0.0),
+    pub fn new(label: &str, channel_index: usize) -> Adapted<ColorSlider> {
+        Adapted::new(Self {
             value: 0.5,
             channel_index,
             dragging: false,
@@ -96,106 +96,43 @@ impl ColorSlider {
             r: 0.5, g: 0.5, b: 0.5,
             h: 0.0, s: 0.0, l: 0.5,
             a: 1.0,
-        }
+        })
     }
 }
 
-impl Element for ColorSlider {
-    cce_ui::impl_widget_base!(ColorSlider);
+/// The track's geometry within the slider's laid-out row rect (shared by paint and events).
+fn track_rect(rect: Rect) -> (f32, f32, f32, f32) {
+    let track_x = rect.x + SLIDER_TRACK_X;
+    let track_w = rect.width - SLIDER_TRACK_X - 68.0;
+    let track_h = SLIDER_TRACK_H;
+    let track_y = rect.y + (rect.height - track_h) / 2.0;
+    (track_x, track_y, track_w, track_h)
+}
 
-    // Leaf legacy widget: own labels via paint_self (cce-ui's default no longer drains
-    // the text getters; render_widget's text pass reads the walk).
-    fn paint_self(&self, ui: &cce_ui::context::UiContext, ctx: &mut cce_ui::scene::paint::PaintCtx) {
-        cce_ui::scene::painter::paint_legacy_leaf(
-            self, ui, ctx,
-            cce_ui::scene::painter::fonted_leaf_labels(self, ui, self.own_labels()),
-        );
+impl cce_ui::widget::Layout for ColorSlider {
+    fn intrinsic_size(&self) -> Option<Size> {
+        Some(Size { width: 0.0, height: SLIDER_ROW_H })
     }
+}
 
+impl cce_ui::widget::Paint for ColorSlider {
     fn color(&self) -> [f32; 4] {
         [0.0, 0.0, 0.0, 0.0]
     }
 
-    fn preferred_height(&self) -> Option<f32> {
-        Some(SLIDER_ROW_H)
-    }
+    fn paint(&self, rect: Rect, ctx: &mut PaintCtx) {
+        let (track_x, track_y, track_w, track_h) = track_rect(rect);
 
-    fn draggable(&self) -> bool {
-        true
-    }
-
-    fn is_dragging(&self) -> bool {
-        self.dragging
-    }
-
-    fn drag_begin(&mut self, _px: f32, _py: f32) {
-        self.dragging = true;
-    }
-
-    fn drag_end(&mut self) {
-        self.dragging = false;
-    }
-
-    fn mouse_input(&mut self, button: MouseButton, state: ElementState, px: f32, py: f32, _ctx: &mut UiContext) -> bool {
-        if button != MouseButton::Left {
-            return false;
-        }
-        let (x, y, w, h) = self.rect();
-        let track_x = x + SLIDER_TRACK_X;
-        let track_w = w - SLIDER_TRACK_X - 68.0;
-        let track_h = SLIDER_TRACK_H;
-        let track_y = y + (h - track_h) / 2.0;
-
-        if px >= track_x && px <= track_x + track_w && py >= track_y && py <= track_y + track_h {
-            if state == ElementState::Pressed {
-                self.dragging = true;
-                let val = ((px - track_x) / track_w).clamp(0.0, 1.0);
-                self.value = val;
-                self.just_changed = true;
-                return true;
-            } else {
-                self.dragging = false;
-                return true;
-            }
-        }
-        false
-    }
-
-    fn drag_update(&mut self, px: f32, _py: f32) -> bool {
-        let (x, _, w, _) = self.rect();
-        let track_x = x + SLIDER_TRACK_X;
-        let track_w = w - SLIDER_TRACK_X - 68.0;
-        let val = ((px - track_x) / track_w).clamp(0.0, 1.0);
-        if (val - self.value).abs() > 0.001 {
-            self.value = val;
-            self.just_changed = true;
-            return true;
-        }
-        false
-    }
-
-    fn extra_quads(&self) -> Vec<(f32, f32, f32, f32, [f32; 4])> {
-        let mut quads = Vec::new();
-        let (x, y, w, h) = self.rect();
-
-        let track_x = x + SLIDER_TRACK_X;
-        let track_w = w - SLIDER_TRACK_X - 68.0;
-        let track_h = SLIDER_TRACK_H;
-        let track_y = y + (h - track_h) / 2.0;
-
-        // 1. Draw track border
-        quads.push((
-            track_x - 1.0,
-            track_y - 1.0,
-            track_w + 2.0,
-            track_h + 2.0,
+        // 1. Track border
+        ctx.quad(
+            Rect { x: track_x - 1.0, y: track_y - 1.0, width: track_w + 2.0, height: track_h + 2.0 },
             cce_ui::color::color_borders_color(),
-        ));
+        );
 
-        // 2. Draw checkerboard behind alpha track (channel_index == 6)
+        // 2. Checkerboard behind alpha track (channel_index == 6)
         if self.channel_index == 6 {
             // base background
-            quads.push((track_x, track_y, track_w, track_h, [0.8, 0.8, 0.8, 1.0]));
+            ctx.quad(Rect { x: track_x, y: track_y, width: track_w, height: track_h }, [0.8, 0.8, 0.8, 1.0]);
 
             let grid_size = track_h / 2.0;
             let cols = (track_w / grid_size).ceil() as i32;
@@ -207,14 +144,14 @@ impl Element for ColorSlider {
                         let qw = grid_size.min(track_x + track_w - qx);
                         let qh = grid_size.min(track_y + track_h - qy);
                         if qw > 0.0 && qh > 0.0 {
-                            quads.push((qx, qy, qw, qh, [1.0, 1.0, 1.0, 1.0]));
+                            ctx.quad(Rect { x: qx, y: qy, width: qw, height: qh }, [1.0, 1.0, 1.0, 1.0]);
                         }
                     }
                 }
             }
         }
 
-        // 3. Draw gradient track segments
+        // 3. Gradient track segments
         let n_segments = (track_w as usize).max(1);
         let get_color_at = |t: f32| -> [f32; 4] {
             match self.channel_index {
@@ -242,76 +179,132 @@ impl Element for ColorSlider {
             let t1 = (j + 1) as f32 / n_segments as f32;
             let mid = (t0 + t1) / 2.0;
             let c = cce_ui::color::to_linear(get_color_at(mid));
-            quads.push((
-                track_x + t0 * track_w,
-                track_y,
-                (t1 - t0) * track_w,
-                track_h,
+            ctx.quad(
+                Rect { x: track_x + t0 * track_w, y: track_y, width: (t1 - t0) * track_w, height: track_h },
                 c,
-            ));
+            );
         }
 
-        // 4. Draw indicator (thumb)
+        // 4. Indicator (thumb)
         let indicator_w = 4.0;
         let indicator_h = track_h + 4.0;
         let indicator_x = track_x + self.value * track_w - indicator_w / 2.0;
         let indicator_y = track_y - 2.0;
 
-        quads.push((
-            indicator_x - 1.0,
-            indicator_y - 1.0,
-            indicator_w + 2.0,
-            indicator_h + 2.0,
+        ctx.quad(
+            Rect { x: indicator_x - 1.0, y: indicator_y - 1.0, width: indicator_w + 2.0, height: indicator_h + 2.0 },
             [0.05, 0.05, 0.05, 0.95],
-        ));
-        quads.push((
-            indicator_x,
-            indicator_y,
-            indicator_w,
-            indicator_h,
+        );
+        ctx.quad(
+            Rect { x: indicator_x, y: indicator_y, width: indicator_w, height: indicator_h },
             [1.0, 1.0, 1.0, 1.0],
-        ));
+        );
 
-        quads
+        // 5. Own labels: channel letter + value readout
+        let text_y = rect.y + 8.0;
+        ctx.text(self.label.clone(), rect.x + SLIDER_LABEL_X, text_y, 12.0, [0xaa, 0xaa, 0xbb]);
+
+        let val_str = if self.channel_index < 3 {
+            format!("{}", (self.value * 255.0) as u8)
+        } else if self.channel_index == 3 {
+            format!("{}°", (self.value * 360.0).round() as u16)
+        } else if self.channel_index < 6 {
+            format!("{}%", (self.value * 100.0).round() as u8)
+        } else {
+            format!("{}", (self.value * 255.0).round() as u8)
+        };
+        ctx.text(val_str, rect.x + rect.width - 60.0, text_y, 11.0, [0xcc, 0xcc, 0xdd]);
+    }
+}
+
+impl cce_ui::widget::Input for ColorSlider {
+    fn on_event(&mut self, event: &Event, ectx: &mut EventCtx) -> bool {
+        match event {
+            // Presses arrive hit-gated to the row rect; the track is narrower — re-check it.
+            // Releases arrive ungated (commit/cancel contract): same track gate as legacy.
+            Event::MouseButton { button, state, x, y, .. } => {
+                if *button != MouseButton::Left {
+                    return false;
+                }
+                let (track_x, track_y, track_w, track_h) = track_rect(ectx.rect);
+                if *x >= track_x && *x <= track_x + track_w && *y >= track_y && *y <= track_y + track_h {
+                    if *state == ElementState::Pressed {
+                        self.dragging = true;
+                        self.value = ((*x - track_x) / track_w).clamp(0.0, 1.0);
+                        self.just_changed = true;
+                    } else {
+                        self.dragging = false;
+                    }
+                    return true;
+                }
+                false
+            }
+            Event::MouseWheel { delta, x, y, .. } => {
+                let Some(ui) = ectx.ui.as_deref_mut() else {
+                    return false;
+                };
+                // Scroll-gesture gating: only the widget that initiated the gesture keeps it.
+                if !ui.scroll_gesture_new && ui.scroll_initiate_widget_id != Some(ectx.id) {
+                    return false;
+                }
+                let r = ectx.rect;
+                if *x >= r.x && *x <= r.x + r.width && *y >= r.y && *y <= r.y + r.height {
+                    if ui.scroll_gesture_new {
+                        ui.scroll_initiate_widget_id = Some(ectx.id);
+                    }
+                    let scroll_amount = match delta {
+                        MouseScrollDelta::LineDelta(_x, y) => *y,
+                        MouseScrollDelta::PixelDelta(pos) => pos.y as f32 / 120.0,
+                    };
+
+                    let step = if self.channel_index == 3 {
+                        5.0 / 360.0
+                    } else if self.channel_index == 6 {
+                        0.05
+                    } else if self.channel_index >= 4 && self.channel_index <= 5 {
+                        0.01
+                    } else {
+                        1.0 / 255.0
+                    };
+
+                    let new_value = (self.value + scroll_amount * step).clamp(0.0, 1.0);
+                    if (new_value - self.value).abs() > 0.0001 {
+                        self.value = new_value;
+                        self.just_changed = true;
+                    }
+                    return true;
+                }
+                false
+            }
+            _ => false,
+        }
     }
 
+    fn draggable(&self, _rect: Rect) -> bool {
+        true
+    }
 
-    fn mouse_wheel(&mut self, delta: &MouseScrollDelta, px: f32, py: f32, ctx: &mut UiContext) -> bool {
-        let my_id = self.base.id();
-        if !ctx.scroll_gesture_new {
-            if ctx.scroll_initiate_widget_id != Some(my_id) {
-                return false;
-            }
-        }
-        let (x, y, w, h) = self.rect();
+    fn is_dragging(&self) -> bool {
+        self.dragging
+    }
 
-        if px >= x && px <= x + w && py >= y && py <= y + h {
-            if ctx.scroll_gesture_new {
-                ctx.scroll_initiate_widget_id = Some(my_id);
-            }
-            let scroll_amount = match delta {
-                MouseScrollDelta::LineDelta(_x, y) => *y,
-                MouseScrollDelta::PixelDelta(pos) => pos.y as f32 / 120.0,
-            };
+    fn drag_begin(&mut self, _px: f32, _py: f32, _rect: Rect) {
+        self.dragging = true;
+    }
 
-            let step = if self.channel_index == 3 {
-                5.0 / 360.0
-            } else if self.channel_index == 6 {
-                0.05
-            } else if self.channel_index >= 4 && self.channel_index <= 5 {
-                0.01
-            } else {
-                1.0 / 255.0
-            };
-
-            let new_value = (self.value + scroll_amount * step).clamp(0.0, 1.0);
-            if (new_value - self.value).abs() > 0.0001 {
-                self.value = new_value;
-                self.just_changed = true;
-            }
+    fn drag_update(&mut self, px: f32, _py: f32, rect: Rect) -> bool {
+        let (track_x, _, track_w, _) = track_rect(rect);
+        let val = ((px - track_x) / track_w).clamp(0.0, 1.0);
+        if (val - self.value).abs() > 0.001 {
+            self.value = val;
+            self.just_changed = true;
             return true;
         }
         false
+    }
+
+    fn drag_end(&mut self) {
+        self.dragging = false;
     }
 }
 
@@ -340,7 +333,7 @@ enum Message {
 struct ColorApp {
     apply_btn: cce_ui::widget::Adapted<cce_ui::widget::Button>,
     cancel_btn: cce_ui::widget::Adapted<cce_ui::widget::Button>,
-    sliders: Vec<ColorSlider>,
+    sliders: Vec<Adapted<ColorSlider>>,
 
     red: f32,
     green: f32,
@@ -985,42 +978,4 @@ fn parse_hex(hex: &str) -> Option<(f32, f32, f32, Option<f32>)> {
 
 fn main() {
     cce_ui::engine::run::<ColorApp>();
-}
-
-impl ColorSlider {
-    fn own_labels(&self) -> Vec<TextLabel> {
-        let mut labels = Vec::new();
-        let (x, y, w, _) = self.rect();
-        let text_y = y + 8.0;
-
-        // Label
-        labels.push(TextLabel {
-            text: self.label.clone(),
-            x: x + SLIDER_LABEL_X,
-            y: text_y,
-            font_size: 12.0,
-            color: [0xaa, 0xaa, 0xbb],
-        });
-
-        // Value readout
-        let val_str = if self.channel_index < 3 {
-            format!("{}", (self.value * 255.0) as u8)
-        } else if self.channel_index == 3 {
-            format!("{}°", (self.value * 360.0).round() as u16)
-        } else if self.channel_index < 6 {
-            format!("{}%", (self.value * 100.0).round() as u8)
-        } else {
-            format!("{}", (self.value * 255.0).round() as u8)
-        };
-
-        labels.push(TextLabel {
-            text: val_str,
-            x: x + w - 60.0,
-            y: text_y,
-            font_size: 11.0,
-            color: [0xcc, 0xcc, 0xdd],
-        });
-
-        labels
-    }
 }
