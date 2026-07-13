@@ -738,7 +738,7 @@ impl Application for ColorApp {
             let self_ptr = self as *mut Self;
             unsafe {
                 for slider in (*self_ptr).sliders.iter_mut() {
-                    if self.ui_context.propagate_event(&event, slider.as_ptr_mut()) {
+                    if self.ui_context.propagate_event(&event, slider.id()) {
                         any = true;
                         break;
                     }
@@ -822,14 +822,14 @@ impl Application for ColorApp {
         // dragging index; DragUpdate reaches the drag target even off-rect).
         let ev = Event::PointerMove { x: pos.x, y: pos.y, local_x: pos.x, local_y: pos.y };
         if self.expecting_output {
-            let apply = self.apply_btn.as_ptr_mut();
+            let apply = self.apply_btn.id();
             self.ui_context.propagate_event(&ev, apply);
-            let cancel = self.cancel_btn.as_ptr_mut();
+            let cancel = self.cancel_btn.id();
             self.ui_context.propagate_event(&ev, cancel);
         }
-        let slider_ptrs: Vec<_> = self.sliders.iter_mut().map(|s| s.as_ptr_mut()).collect();
-        for ptr in slider_ptrs {
-            self.ui_context.propagate_event(&ev, ptr);
+        let slider_roots: Vec<_> = self.sliders.iter().map(|s| s.id()).collect();
+        for root in slider_roots {
+            self.ui_context.propagate_event(&ev, root);
         }
         // Drain the drag's value change like the wheel path does.
         let mut changed_slider = None;
@@ -861,13 +861,13 @@ impl Application for ColorApp {
         let mut handled = false;
 
         if self.expecting_output {
-            let apply = self.apply_btn.as_ptr_mut();
+            let apply = self.apply_btn.id();
             if self.ui_context.propagate_event(&ev, apply) {
                 handled = true;
                 *needs_rebuild = true;
                 self.needs_rebuild = true;
             }
-            let cancel = self.cancel_btn.as_ptr_mut();
+            let cancel = self.cancel_btn.id();
             if self.ui_context.propagate_event(&ev, cancel) {
                 handled = true;
                 *needs_rebuild = true;
@@ -883,9 +883,9 @@ impl Application for ColorApp {
         }
 
         if !handled {
-            let slider_ptrs: Vec<_> = self.sliders.iter_mut().map(|s| s.as_ptr_mut()).collect();
-            for ptr in slider_ptrs {
-                if self.ui_context.propagate_event(&ev, ptr) {
+            let slider_roots: Vec<_> = self.sliders.iter().map(|s| s.id()).collect();
+            for root in slider_roots {
+                if self.ui_context.propagate_event(&ev, root) {
                     break;
                 }
             }
