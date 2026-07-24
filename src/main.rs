@@ -344,6 +344,11 @@ struct ColorApp {
     alpha: f32,
     with_alpha: bool,
     expecting_output: bool,
+    // --stream: print every color change (flushed) so the launching widget
+    // applies it live while this picker stays open; Cancel prints `cancel`
+    // so the caller can restore the launch value.
+    stream: bool,
+    last_streamed: String,
 
     cursor_x: f32,
     cursor_y: f32,
@@ -602,10 +607,13 @@ impl Application for ColorApp {
     fn new(_qh: &QueueHandle<EngineState<Self>>, _sender: calloop::channel::Sender<Self::Message>) -> Self {
         let args: Vec<String> = std::env::args().collect();
         let mut with_alpha = false;
+        let mut stream = false;
         let mut hex_arg = None;
         for arg in args.iter().skip(1) {
             if arg == "--alpha" || arg == "-a" {
                 with_alpha = true;
+            } else if arg == "--stream" {
+                stream = true;
             } else {
                 hex_arg = Some(arg.as_str());
             }
@@ -673,6 +681,8 @@ impl Application for ColorApp {
             alpha: a,
             with_alpha,
             expecting_output,
+            stream,
+            last_streamed: String::new(),
             cursor_x: 0.0,
             cursor_y: 0.0,
             width: initial_w,
@@ -713,12 +723,28 @@ impl Application for ColorApp {
                 *exit = true;
             }
             Message::Cancel => {
+                if self.stream {
+                    use std::io::Write;
+                    println!("cancel");
+                    let _ = std::io::stdout().flush();
+                }
                 *exit = true;
             }
         }
     }
 
-    fn tick(&mut self, _dt: f32, _needs_rebuild: &mut bool) {}
+    fn tick(&mut self, _dt: f32, _needs_rebuild: &mut bool) {
+        // Stream the live color to the launching widget on every change.
+        if self.stream {
+            let hex = self.hex();
+            if hex != self.last_streamed {
+                use std::io::Write;
+                println!("{}", hex);
+                let _ = std::io::stdout().flush();
+                self.last_streamed = hex;
+            }
+        }
+    }
 
     fn handle_mouse_wheel(&mut self, delta: &MouseScrollDelta, pos: LogicalPosition, needs_rebuild: &mut bool) {
         let px = pos.x;
