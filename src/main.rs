@@ -304,9 +304,19 @@ impl cce_ui::widget::Paint for ColorSlider {
             self.paint_classic(track_x, track_y, track_w, track_h, ctx);
         }
 
-        // 5. Own labels: channel letter + value readout
-        let text_y = rect.y + 8.0;
-        ctx.text(self.label.clone(), rect.x + SLIDER_LABEL_X, text_y, 12.0, [0xaa, 0xaa, 0xbb]);
+        // 5. Own labels: channel letter + value readout, both sitting on the
+        // track's centerline (align_text_y — the stock Slider's centering),
+        // the readout right-aligned so every row's value shares one flush
+        // edge, mirroring the label's left inset.
+        let label_size = 12.0;
+        let value_size = 11.0;
+        ctx.text(
+            self.label.clone(),
+            rect.x + SLIDER_LABEL_X,
+            cce_ui::layout::align_text_y(rect.y, rect.height, label_size, 0.0),
+            label_size,
+            [0xaa, 0xaa, 0xbb],
+        );
 
         let val_str = if self.channel_index < 3 {
             format!("{}", (self.value * 255.0) as u8)
@@ -317,7 +327,17 @@ impl cce_ui::widget::Paint for ColorSlider {
         } else {
             format!("{}", (self.value * 255.0).round() as u8)
         };
-        ctx.text(val_str, rect.x + rect.width - 60.0, text_y, 11.0, [0xcc, 0xcc, 0xdd]);
+        // Default (font: None) text shapes in the preferred sans family —
+        // measure with the same family so the right edge is exact.
+        let (sans, ..) = cce_ui::layout::read_preferred_fonts();
+        let vw = cce_ui::widget::display::measure_text_width(&val_str, &sans, value_size);
+        ctx.text(
+            val_str,
+            rect.x + rect.width - SLIDER_LABEL_X - vw,
+            cce_ui::layout::align_text_y(rect.y, rect.height, value_size, 0.0),
+            value_size,
+            [0xcc, 0xcc, 0xdd],
+        );
     }
 }
 
