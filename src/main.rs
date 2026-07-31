@@ -349,6 +349,10 @@ struct ColorApp {
     // so the caller can restore the launch value.
     stream: bool,
     last_streamed: String,
+    // Keyboard focus: while focused the backplate wash drops UNDER the
+    // sliders so the tracks show full-saturation color; unfocused keeps the
+    // muted washed-over look.
+    window_focused: bool,
 
     cursor_x: f32,
     cursor_y: f32,
@@ -495,22 +499,32 @@ impl ColorApp {
         // gradient quads first, then the dissolved root Backplate's translucent plate OVER
         // them (the legacy aggregate emitted all plain quads, then the rounded root bg —
         // the app's muted pastel look depends on that wash), then the rounded buttons.
+        // Focused windows invert the first two: the plate goes UNDER the sliders so the
+        // tracks show unwashed full-saturation color while the picker is being used.
         let mut window_pc = PageContent::new();
         {
             let self_ptr = self as *mut Self;
+            // Backplate::color() default: page-low at the active backplate opacity.
+            let backplate = {
+                let mut c = cce_ui::color::page_low_color();
+                if c[3] > 0.001 {
+                    c[3] = cce_ui::color::active_backplate_opacity();
+                }
+                let radius = cce_ui::colors::backplate_corner_radius();
+                (c, 0.0, 0.0, self.width as f32, self.height as f32, radius.max(0.0), (radius > 0.1, radius > 0.1, radius > 0.1, radius > 0.1))
+            };
+            if self.window_focused {
+                window_pc.rects.push(backplate);
+            }
             unsafe {
                 for slider in (*self_ptr).sliders.iter_mut() {
                     let (x, y, w, h) = slider.rect();
                     cce_ui::layout::render_widget(&mut window_pc, slider, x, y, w, h, &mut self.ui_context);
                 }
             }
-            // Backplate::color() default: page-low at the active backplate opacity.
-            let mut c = cce_ui::color::page_low_color();
-            if c[3] > 0.001 {
-                c[3] = cce_ui::color::active_backplate_opacity();
+            if !self.window_focused {
+                window_pc.rects.push(backplate);
             }
-            let radius = cce_ui::colors::backplate_corner_radius();
-            window_pc.rects.push((c, 0.0, 0.0, self.width as f32, self.height as f32, radius.max(0.0), (radius > 0.1, radius > 0.1, radius > 0.1, radius > 0.1)));
             unsafe {
                 if self.expecting_output {
                     let (x, y, w, h) = (*self_ptr).apply_btn.rect();
@@ -683,6 +697,7 @@ impl Application for ColorApp {
             expecting_output,
             stream,
             last_streamed: String::new(),
+            window_focused: false,
             cursor_x: 0.0,
             cursor_y: 0.0,
             width: initial_w,
@@ -953,6 +968,14 @@ impl Application for ColorApp {
             }
         }
         None
+    }
+
+    fn handle_focus_change(&mut self, focused: bool, needs_rebuild: &mut bool) {
+        if self.window_focused != focused {
+            self.window_focused = focused;
+            self.rebuild_layout();
+            *needs_rebuild = true;
+        }
     }
 }
 
