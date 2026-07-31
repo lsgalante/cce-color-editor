@@ -707,8 +707,8 @@ impl Application for ColorApp {
             if self.with_alpha { 360 } else { 324 }
         };
         WindowSettings {
-            title: "Color Interface".to_string(),
-            app_id: "cce-colors".to_string(),
+            title: "Color Editor".to_string(),
+            app_id: "cce-color-editor".to_string(),
             width: 380,
             height: win_h,
             fullscreen: false,

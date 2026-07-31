@@ -5,7 +5,7 @@ build:
 
 install: build
 	mkdir -p ~/.local/bin
-	install -m 755 ../target/release/cce-colors ~/.local/bin/cce-colors
+	install -m 755 ../target/release/cce-color-editor ~/.local/bin/cce-color-editor
 
 run:
 	cargo run
