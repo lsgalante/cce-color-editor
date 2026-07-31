@@ -109,20 +109,32 @@ fn track_rect(rect: Rect) -> (f32, f32, f32, f32) {
     (track_x, track_y, track_w, track_h)
 }
 
-impl cce_ui::widget::Layout for ColorSlider {
-    fn intrinsic_size(&self) -> Option<Size> {
-        Some(Size { width: 0.0, height: SLIDER_ROW_H })
+impl ColorSlider {
+    /// The channel's gradient color at normalized track position `t`.
+    fn color_at(&self, t: f32) -> [f32; 4] {
+        match self.channel_index {
+            0 => [t, self.g, self.b, self.a],
+            1 => [self.r, t, self.b, self.a],
+            2 => [self.r, self.g, t, self.a],
+            3 => {
+                let (r, g, b) = hsl_to_rgb(t, self.s, self.l);
+                [r, g, b, self.a]
+            }
+            4 => {
+                let (r, g, b) = hsl_to_rgb(self.h, t, self.l);
+                [r, g, b, self.a]
+            }
+            5 => {
+                let (r, g, b) = hsl_to_rgb(self.h, self.s, t);
+                [r, g, b, self.a]
+            }
+            _ => [self.r, self.g, self.b, t],
+        }
     }
-}
 
-impl cce_ui::widget::Paint for ColorSlider {
-    fn color(&self) -> [f32; 4] {
-        [0.0, 0.0, 0.0, 0.0]
-    }
-
-    fn paint(&self, rect: Rect, ctx: &mut PaintCtx) {
-        let (track_x, track_y, track_w, track_h) = track_rect(rect);
-
+    /// Legacy look: bordered full-height gradient track with a thumb line
+    /// (and the checkerboard behind the alpha track).
+    fn paint_classic(&self, track_x: f32, track_y: f32, track_w: f32, track_h: f32, ctx: &mut PaintCtx) {
         // 1. Track border
         ctx.quad(
             Rect { x: track_x - 1.0, y: track_y - 1.0, width: track_w + 2.0, height: track_h + 2.0 },
@@ -153,32 +165,11 @@ impl cce_ui::widget::Paint for ColorSlider {
 
         // 3. Gradient track segments
         let n_segments = (track_w as usize).max(1);
-        let get_color_at = |t: f32| -> [f32; 4] {
-            match self.channel_index {
-                0 => [t, self.g, self.b, self.a],
-                1 => [self.r, t, self.b, self.a],
-                2 => [self.r, self.g, t, self.a],
-                3 => {
-                    let (r, g, b) = hsl_to_rgb(t, self.s, self.l);
-                    [r, g, b, self.a]
-                }
-                4 => {
-                    let (r, g, b) = hsl_to_rgb(self.h, t, self.l);
-                    [r, g, b, self.a]
-                }
-                5 => {
-                    let (r, g, b) = hsl_to_rgb(self.h, self.s, t);
-                    [r, g, b, self.a]
-                }
-                _ => [self.r, self.g, self.b, t],
-            }
-        };
-
         for j in 0..n_segments {
             let t0 = j as f32 / n_segments as f32;
             let t1 = (j + 1) as f32 / n_segments as f32;
             let mid = (t0 + t1) / 2.0;
-            let c = cce_ui::color::to_linear(get_color_at(mid));
+            let c = cce_ui::color::to_linear(self.color_at(mid));
             ctx.quad(
                 Rect { x: track_x + t0 * track_w, y: track_y, width: (t1 - t0) * track_w, height: track_h },
                 c,
@@ -199,6 +190,119 @@ impl cce_ui::widget::Paint for ColorSlider {
             Rect { x: indicator_x, y: indicator_y, width: indicator_w, height: indicator_h },
             [1.0, 1.0, 1.0, 1.0],
         );
+    }
+
+    /// Band look (config `style.control.slider.style = "band"`, the style
+    /// cce-designer runs): cce-ui Slider's thin full-range band swelling in a
+    /// cosine bell at the value, seated in the same shape-conforming recessed
+    /// well — except every ~1px fill column carries the channel gradient
+    /// instead of the uniform thumb color, and the alpha track keeps its
+    /// checkerboard, drawn per column under the translucent fill. No thumb:
+    /// the bulge is the value marker. Geometry and well shading mirror
+    /// `Slider::paint_band`; keep them in step.
+    fn paint_band(&self, rect: Rect, track_x: f32, track_w: f32, ctx: &mut PaintCtx) {
+        let band_t = cce_ui::layout::slider_band_thickness().max(0.5);
+        let bulge_h = cce_ui::layout::slider_bulge_height().clamp(band_t, rect.height);
+        let bulge_w = cce_ui::layout::slider_bulge_width().max(2.0);
+        let cy = rect.y + rect.height * 0.5;
+        let vx = track_x + self.value * track_w;
+
+        let height_at = |x: f32| -> f32 {
+            let t = ((x - vx) / bulge_w).clamp(-1.0, 1.0);
+            let bell = 0.5 * (1.0 + (std::f32::consts::PI * t).cos());
+            band_t + (bulge_h - band_t) * bell.powf(1.35)
+        };
+
+        // The well: shadow hugging the top contour, lit lip along the bottom
+        // (DE light sits upper-left), stepped alphas riding bevel_depth.
+        // 1px columns with EXACT widths — translucent quads must not overlap.
+        const WELL_GAP: f32 = 4.0;
+        const WELL_WALL: f32 = 3.0;
+        const WALL_STEPS: usize = 3;
+        let strength = (cce_ui::layout::bevel_depth() / 0.15).clamp(0.0, 2.0);
+        let a_dark = 0.32 * strength;
+        let a_light = 0.16 * strength;
+        let wx0 = track_x - WELL_GAP;
+        let wx1 = track_x + track_w + WELL_GAP;
+        let cols = (wx1 - wx0).ceil().max(1.0) as i32;
+        let colw = (wx1 - wx0) / cols as f32;
+        let sub = WELL_WALL / WALL_STEPS as f32;
+        for i in 0..cols {
+            let x = wx0 + i as f32 * colw;
+            let xm = (x + colw * 0.5).clamp(track_x, track_x + track_w);
+            let c = height_at(xm) * 0.5 + WELL_GAP;
+            for k in 0..WALL_STEPS {
+                let fade = 1.0 - k as f32 / WALL_STEPS as f32;
+                ctx.quad(
+                    Rect { x, y: cy - c + k as f32 * sub, width: colw, height: sub },
+                    [0.0, 0.0, 0.0, a_dark * fade],
+                );
+                ctx.quad(
+                    Rect { x, y: cy + c + k as f32 * sub, width: colw, height: sub },
+                    [1.0, 1.0, 1.0, a_light * fade],
+                );
+            }
+        }
+        // End walls close the well.
+        let c0 = height_at(track_x) * 0.5 + WELL_GAP;
+        let c1 = height_at(track_x + track_w) * 0.5 + WELL_GAP;
+        for k in 0..WALL_STEPS {
+            let fade = 1.0 - k as f32 / WALL_STEPS as f32;
+            ctx.quad(
+                Rect { x: wx0 + k as f32 * sub, y: cy - c0, width: sub, height: 2.0 * c0 },
+                [0.0, 0.0, 0.0, a_dark * fade],
+            );
+            ctx.quad(
+                Rect { x: wx1 + k as f32 * sub, y: cy - c1, width: sub, height: 2.0 * c1 },
+                [1.0, 1.0, 1.0, a_light * fade],
+            );
+        }
+
+        // Gradient fill: ~1px columns over the whole track, height from the
+        // band profile (a hair of overlap so AA seams can't open).
+        let steps = (track_w.ceil() as i32).max(1);
+        let step_w = track_w / steps as f32;
+        let checker_grid = SLIDER_TRACK_H / 2.0;
+        for i in 0..steps {
+            let x = track_x + i as f32 * step_w;
+            let xm = x + step_w * 0.5;
+            let h = height_at(xm);
+            // Alpha track: checkerboard backdrop inside the band shape.
+            if self.channel_index == 6 {
+                let cell = ((xm - track_x) / checker_grid).floor() as i32;
+                let (top, bottom) = if cell % 2 == 0 {
+                    ([0.8, 0.8, 0.8, 1.0], [1.0, 1.0, 1.0, 1.0])
+                } else {
+                    ([1.0, 1.0, 1.0, 1.0], [0.8, 0.8, 0.8, 1.0])
+                };
+                ctx.quad(Rect { x, y: cy - h * 0.5, width: step_w + 0.3, height: h * 0.5 }, top);
+                ctx.quad(Rect { x, y: cy, width: step_w + 0.3, height: h * 0.5 }, bottom);
+            }
+            let c = cce_ui::color::to_linear(self.color_at((xm - track_x) / track_w));
+            ctx.quad(Rect { x, y: cy - h * 0.5, width: step_w + 0.3, height: h }, c);
+        }
+    }
+}
+
+impl cce_ui::widget::Layout for ColorSlider {
+    fn intrinsic_size(&self) -> Option<Size> {
+        Some(Size { width: 0.0, height: SLIDER_ROW_H })
+    }
+}
+
+impl cce_ui::widget::Paint for ColorSlider {
+    fn color(&self) -> [f32; 4] {
+        [0.0, 0.0, 0.0, 0.0]
+    }
+
+    fn paint(&self, rect: Rect, ctx: &mut PaintCtx) {
+        let (track_x, track_y, track_w, track_h) = track_rect(rect);
+
+        if cce_ui::layout::slider_band() {
+            self.paint_band(rect, track_x, track_w, ctx);
+        } else {
+            self.paint_classic(track_x, track_y, track_w, track_h, ctx);
+        }
 
         // 5. Own labels: channel letter + value readout
         let text_y = rect.y + 8.0;
