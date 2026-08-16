@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Color Editor
+Exec=cce-color-editor
+Icon=color-picker
+Terminal=false
+Categories=Utility;Graphics;
