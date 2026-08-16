@@ -2,6 +2,6 @@
 Type=Application
 Name=Color Editor
 Exec=cce-color-editor
-Icon=color-picker
+Icon=cce-color-editor
 Terminal=false
 Categories=Utility;Graphics;
