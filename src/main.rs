@@ -634,7 +634,8 @@ impl ColorApp {
                 if c[3] > 0.001 {
                     c[3] = cce_ui::color::root_plate_opacity();
                 }
-                let radius = cce_ui::colors::root_plate_corner_radius();
+                // Silhouette radius (cce-ui RFC 7b).
+                let radius = cce_ui::layout::window_silhouette_radius();
                 (c, 0.0, 0.0, self.width as f32, self.height as f32, radius.max(0.0), (radius > 0.1, radius > 0.1, radius > 0.1, radius > 0.1))
             };
             if self.window_focused {
