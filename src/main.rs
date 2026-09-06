@@ -473,7 +473,7 @@ struct ColorApp {
     // so the caller can restore the launch value.
     stream: bool,
     last_streamed: String,
-    // Keyboard focus: while focused the backplate wash drops UNDER the
+    // Keyboard focus: while focused the root plate wash drops UNDER the
     // sliders so the tracks show full-saturation color; unfocused keeps the
     // muted washed-over look.
     window_focused: bool,
@@ -599,7 +599,7 @@ impl ColorApp {
         let mut widgets = Vec::new();
         let mut texts = Vec::new();
 
-        // 1. Layout elements (root Backplate DISSOLVED: widgets are top-level; its plate
+        // 1. Layout elements (root plate container DISSOLVED: widgets are top-level; its plate
         // is emitted below as the first tuple)
         let preview_y_offset = if self.with_alpha { SLIDER_ROW_H } else { 0.0 };
         let preview_y = PREVIEW_Y + preview_y_offset;
@@ -620,7 +620,7 @@ impl ColorApp {
 
         // 2. Each top-level widget rendered through the same immediate-mode path the root
         // recursion used — replicating the legacy TUPLE ORDER exactly: the sliders' plain
-        // gradient quads first, then the dissolved root Backplate's translucent plate OVER
+        // gradient quads first, then the dissolved root plate container's translucent plate OVER
         // them (the legacy aggregate emitted all plain quads, then the rounded root bg —
         // the app's muted pastel look depends on that wash), then the rounded buttons.
         // Focused windows invert the first two: the plate goes UNDER the sliders so the
@@ -628,8 +628,8 @@ impl ColorApp {
         let mut window_pc = PageContent::new();
         {
             let self_ptr = self as *mut Self;
-            // Backplate::color() default: page-low at the active backplate opacity.
-            let backplate = {
+            // the old `Backplate::color()` default: page-low at the active root plate opacity.
+            let root_plate = {
                 let mut c = cce_ui::color::page_low_color();
                 if c[3] > 0.001 {
                     c[3] = cce_ui::color::root_plate_opacity();
@@ -639,7 +639,7 @@ impl ColorApp {
                 (c, 0.0, 0.0, self.width as f32, self.height as f32, radius.max(0.0), (radius > 0.1, radius > 0.1, radius > 0.1, radius > 0.1))
             };
             if self.window_focused {
-                window_pc.rects.push(backplate);
+                window_pc.rects.push(root_plate);
             }
             unsafe {
                 for slider in (*self_ptr).sliders.iter_mut() {
@@ -648,7 +648,7 @@ impl ColorApp {
                 }
             }
             if !self.window_focused {
-                window_pc.rects.push(backplate);
+                window_pc.rects.push(root_plate);
             }
             unsafe {
                 if self.expecting_output {
@@ -896,7 +896,7 @@ impl Application for ColorApp {
             local_x: px,
             local_y: py,
         };
-        // Root Backplate dissolved: propagate to each slider directly (they own
+        // root plate container dissolved: propagate to each slider directly (they own
         // mouse_wheel; the buttons never scrolled).
         let mut changed_slider = None;
         let mut any = false;
@@ -969,8 +969,8 @@ impl Application for ColorApp {
         true
     }
 
-    fn is_movable_backplate_at(&self, px: f32, py: f32) -> bool {
-        // Root Backplate dissolved: the surface itself is the movable plate.
+    fn is_movable_root_plate_at(&self, px: f32, py: f32) -> bool {
+        // root plate container dissolved: the surface itself is the movable plate.
         self.ui_context.drag_allowed_at(px, py)
     }
 
