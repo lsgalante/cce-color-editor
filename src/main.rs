@@ -132,74 +132,6 @@ impl ColorSlider {
         }
     }
 
-    /// Legacy look: bordered full-height gradient track with a thumb line
-    /// (and the checkerboard behind the alpha track).
-    fn paint_classic(&self, track_x: f32, track_y: f32, track_w: f32, track_h: f32, ctx: &mut PaintCtx) {
-        // 1. Track border
-        ctx.quad(
-            Rect { x: track_x - 1.0, y: track_y - 1.0, width: track_w + 2.0, height: track_h + 2.0 },
-            cce_ui::color::color_borders_color(),
-        );
-
-        // 2. Checkerboard behind alpha track (channel_index == 6)
-        if self.channel_index == 6 {
-            // base background
-            ctx.quad(Rect { x: track_x, y: track_y, width: track_w, height: track_h }, [0.8, 0.8, 0.8, 1.0]);
-
-            let grid_size = track_h / 2.0;
-            let cols = (track_w / grid_size).ceil() as i32;
-            for r in 0..2 {
-                for c in 0..cols {
-                    if (r + c) % 2 == 1 {
-                        let qx = track_x + c as f32 * grid_size;
-                        let qy = track_y + r as f32 * grid_size;
-                        let qw = grid_size.min(track_x + track_w - qx);
-                        let qh = grid_size.min(track_y + track_h - qy);
-                        if qw > 0.0 && qh > 0.0 {
-                            ctx.quad(Rect { x: qx, y: qy, width: qw, height: qh }, [1.0, 1.0, 1.0, 1.0]);
-                        }
-                    }
-                }
-            }
-        }
-
-        // 3. Gradient track segments
-        let n_segments = (track_w as usize).max(1);
-        for j in 0..n_segments {
-            let t0 = j as f32 / n_segments as f32;
-            let t1 = (j + 1) as f32 / n_segments as f32;
-            let mid = (t0 + t1) / 2.0;
-            let c = cce_ui::color::to_linear(self.color_at(mid));
-            ctx.quad(
-                Rect { x: track_x + t0 * track_w, y: track_y, width: (t1 - t0) * track_w, height: track_h },
-                c,
-            );
-        }
-
-        // 4. Indicator (thumb)
-        let indicator_w = 4.0;
-        let indicator_h = track_h + 4.0;
-        let indicator_x = track_x + self.value * track_w - indicator_w / 2.0;
-        let indicator_y = track_y - 2.0;
-
-        ctx.quad(
-            Rect { x: indicator_x - 1.0, y: indicator_y - 1.0, width: indicator_w + 2.0, height: indicator_h + 2.0 },
-            [0.05, 0.05, 0.05, 0.95],
-        );
-        ctx.quad(
-            Rect { x: indicator_x, y: indicator_y, width: indicator_w, height: indicator_h },
-            [1.0, 1.0, 1.0, 1.0],
-        );
-    }
-
-    /// Band look (config `style.control.slider.style = "band"`, the style
-    /// cce-designer runs): cce-ui Slider's thin full-range band swelling in a
-    /// cosine bell at the value, seated in the same shape-conforming recessed
-    /// well — except every ~1px fill column carries the channel gradient
-    /// instead of the uniform thumb color, and the alpha track keeps its
-    /// checkerboard, drawn per column under the translucent fill. No thumb:
-    /// the bulge is the value marker. Geometry and well shading mirror
-    /// `Slider::paint_band`; keep them in step.
     fn paint_band(&self, rect: Rect, track_x: f32, track_w: f32, ctx: &mut PaintCtx) {
         let band_t = cce_ui::layout::slider_band_thickness().max(0.5);
         let bulge_h = cce_ui::layout::slider_bulge_height().clamp(band_t, rect.height);
@@ -296,13 +228,9 @@ impl cce_ui::widget::Paint for ColorSlider {
     }
 
     fn paint(&self, rect: Rect, ctx: &mut PaintCtx) {
-        let (track_x, track_y, track_w, track_h) = track_rect(rect);
+        let (track_x, _, track_w, _) = track_rect(rect);
 
-        if cce_ui::layout::slider_band() {
-            self.paint_band(rect, track_x, track_w, ctx);
-        } else {
-            self.paint_classic(track_x, track_y, track_w, track_h, ctx);
-        }
+        self.paint_band(rect, track_x, track_w, ctx);
 
         // 5. Own labels: channel letter + value readout, both sitting on the
         // track's centerline (align_text_y — the stock Slider's centering),
