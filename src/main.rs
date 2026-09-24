@@ -401,10 +401,6 @@ struct ColorApp {
     // so the caller can restore the launch value.
     stream: bool,
     last_streamed: String,
-    // Keyboard focus: while focused the root plate wash drops UNDER the
-    // sliders so the tracks show full-saturation color; unfocused keeps the
-    // muted washed-over look.
-    window_focused: bool,
 
     cursor_x: f32,
     cursor_y: f32,
@@ -547,36 +543,17 @@ impl ColorApp {
         }
 
         // 2. Each top-level widget rendered through the same immediate-mode path the root
-        // recursion used — replicating the legacy TUPLE ORDER exactly: the sliders' plain
-        // gradient quads first, then the dissolved root plate container's translucent plate OVER
-        // them (the legacy aggregate emitted all plain quads, then the rounded root bg —
-        // the app's muted pastel look depends on that wash), then the rounded buttons.
-        // Focused windows invert the first two: the plate goes UNDER the sliders so the
-        // tracks show unwashed full-saturation color while the picker is being used.
+        // recursion used: the sliders' plain gradient quads, then the rounded buttons.
+        // The window base is not in this list — `display_list` emits the standard root
+        // plate first, under everything gathered here.
         let mut window_pc = PageContent::new();
         {
             let self_ptr = self as *mut Self;
-            // the old `Backplate::color()` default: page-low at the active root plate opacity.
-            let root_plate = {
-                let mut c = cce_ui::color::page_low_color();
-                if c[3] > 0.001 {
-                    c[3] = cce_ui::color::root_plate_opacity();
-                }
-                // Silhouette radius (cce-ui RFC 7b).
-                let radius = cce_ui::layout::window_silhouette_radius();
-                (c, 0.0, 0.0, self.width as f32, self.height as f32, radius.max(0.0), (radius > 0.1, radius > 0.1, radius > 0.1, radius > 0.1))
-            };
-            if self.window_focused {
-                window_pc.rects.push(root_plate);
-            }
             unsafe {
                 for slider in (*self_ptr).sliders.iter_mut() {
                     let (x, y, w, h) = slider.rect();
                     cce_ui::layout::render_widget(&mut window_pc, slider, x, y, w, h, &mut self.ui_context);
                 }
-            }
-            if !self.window_focused {
-                window_pc.rects.push(root_plate);
             }
             unsafe {
                 if self.expecting_output {
@@ -750,7 +727,6 @@ impl Application for ColorApp {
             expecting_output,
             stream,
             last_streamed: String::new(),
-            window_focused: false,
             cursor_x: 0.0,
             cursor_y: 0.0,
             width: initial_w,
@@ -867,6 +843,8 @@ impl Application for ColorApp {
         }
         use cce_ui::scene::layout::Rect;
         let mut pc = cce_ui::scene::paint::PaintCtx::new();
+        // The standard root plate (cce-ui PlateSpec::window).
+        pc.root_plate(self.width as f32, self.height as f32);
         for w in &self.widgets {
             let rect = Rect { x: w.x, y: w.y, width: w.w, height: w.h };
             if w.radius > 0.1 {
@@ -1021,14 +999,6 @@ impl Application for ColorApp {
             }
         }
         None
-    }
-
-    fn handle_focus_change(&mut self, focused: bool, needs_rebuild: &mut bool) {
-        if self.window_focused != focused {
-            self.window_focused = focused;
-            self.rebuild_layout();
-            *needs_rebuild = true;
-        }
     }
 }
 
