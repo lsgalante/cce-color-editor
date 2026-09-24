@@ -10,19 +10,35 @@ use wayland_client::QueueHandle;
 use std::io::IsTerminal;
 
 
+// Sizes only. Every inset and gap comes from the cce-ui spacing ladder
+// (`root_plate_inset` at the window edge, `root_plate_gap` between the
+// siblings standing on the root plate: the slider rows, the preview, the
+// buttons) — see `rebuild_layout` and `window_height`.
 const SLIDER_ROW_H: f32 = 36.0;
-const SLIDER_START_Y: f32 = 12.0;
-const SLIDER_LABEL_X: f32 = 12.0;
-const SLIDER_TRACK_X: f32 = 32.0;
+/// The label column: the channel letter's slot before the track begins.
+const SLIDER_LABEL_W: f32 = 20.0;
+/// The readout column: the right-aligned value's slot after the track ends.
+const SLIDER_VALUE_W: f32 = 56.0;
 const SLIDER_TRACK_H: f32 = 20.0;
-const PREVIEW_X: f32 = 12.0;
-const PREVIEW_Y: f32 = 240.0;
 const PREVIEW_W: f32 = 160.0;
 const PREVIEW_H: f32 = 72.0;
-const BUTTON_Y: f32 = 324.0;
 const BUTTON_H: f32 = 32.0;
 const BUTTON_W: f32 = 100.0;
-const BUTTON_GAP: f32 = 12.0;
+
+/// The window's height for a given layout: the slider rows, the preview and
+/// (when the picker reports a result) the button row, each a root-plate
+/// sibling one `root_plate_gap` apart, the whole inset from the window edge
+/// by `root_plate_inset` top and bottom.
+fn window_height(with_alpha: bool, expecting_output: bool) -> u32 {
+    let inset = cce_ui::layout::root_plate_inset();
+    let gap = cce_ui::layout::root_plate_gap();
+    let rows = if with_alpha { 7.0 } else { 6.0 };
+    let mut bottom = inset + rows * SLIDER_ROW_H + gap + PREVIEW_H;
+    if expecting_output {
+        bottom += gap + BUTTON_H;
+    }
+    (bottom + inset).ceil() as u32
+}
 
 // ── PageContent for custom Target Rendering ────────────────────────
 
@@ -101,9 +117,11 @@ impl ColorSlider {
 }
 
 /// The track's geometry within the slider's laid-out row rect (shared by paint and events).
+/// The row is already inset from the window edge; the track sits between the
+/// label column and the readout column.
 fn track_rect(rect: Rect) -> (f32, f32, f32, f32) {
-    let track_x = rect.x + SLIDER_TRACK_X;
-    let track_w = rect.width - SLIDER_TRACK_X - 68.0;
+    let track_x = rect.x + SLIDER_LABEL_W;
+    let track_w = rect.width - SLIDER_LABEL_W - SLIDER_VALUE_W;
     let track_h = SLIDER_TRACK_H;
     let track_y = rect.y + (rect.height - track_h) / 2.0;
     (track_x, track_y, track_w, track_h)
@@ -148,21 +166,24 @@ impl ColorSlider {
         // The well: shadow hugging the top contour, lit lip along the bottom
         // (DE light sits upper-left), stepped alphas riding bevel_depth.
         // 1px columns with EXACT widths — translucent quads must not overlap.
-        const WELL_GAP: f32 = 4.0;
+        // style: deliberate — the well's clearance around the band is carve
+        // geometry (how far the wall stands off the band's contour), not a gap
+        // between siblings; it has to hug the track, not follow the ladder.
+        const WELL_CLEARANCE: f32 = 4.0;
         const WELL_WALL: f32 = 3.0;
         const WALL_STEPS: usize = 3;
         let strength = (cce_ui::layout::bevel_depth() / 0.15).clamp(0.0, 2.0);
         let a_dark = 0.32 * strength;
         let a_light = 0.16 * strength;
-        let wx0 = track_x - WELL_GAP;
-        let wx1 = track_x + track_w + WELL_GAP;
+        let wx0 = track_x - WELL_CLEARANCE;
+        let wx1 = track_x + track_w + WELL_CLEARANCE;
         let cols = (wx1 - wx0).ceil().max(1.0) as i32;
         let colw = (wx1 - wx0) / cols as f32;
         let sub = WELL_WALL / WALL_STEPS as f32;
         for i in 0..cols {
             let x = wx0 + i as f32 * colw;
             let xm = (x + colw * 0.5).clamp(track_x, track_x + track_w);
-            let c = height_at(xm) * 0.5 + WELL_GAP;
+            let c = height_at(xm) * 0.5 + WELL_CLEARANCE;
             for k in 0..WALL_STEPS {
                 let fade = 1.0 - k as f32 / WALL_STEPS as f32;
                 ctx.quad(
@@ -176,8 +197,8 @@ impl ColorSlider {
             }
         }
         // End walls close the well.
-        let c0 = height_at(track_x) * 0.5 + WELL_GAP;
-        let c1 = height_at(track_x + track_w) * 0.5 + WELL_GAP;
+        let c0 = height_at(track_x) * 0.5 + WELL_CLEARANCE;
+        let c1 = height_at(track_x + track_w) * 0.5 + WELL_CLEARANCE;
         for k in 0..WALL_STEPS {
             let fade = 1.0 - k as f32 / WALL_STEPS as f32;
             ctx.quad(
@@ -235,12 +256,14 @@ impl cce_ui::widget::Paint for ColorSlider {
         // 5. Own labels: channel letter + value readout, both sitting on the
         // track's centerline (align_text_y — the stock Slider's centering),
         // the readout right-aligned so every row's value shares one flush
-        // edge, mirroring the label's left inset.
+        // edge, mirroring the label's left edge. The row rect is already
+        // inset from the window edge (root_plate_inset), so both sit flush
+        // with it.
         let label_size = 12.0;
         let value_size = 11.0;
         ctx.text(
             self.label.clone(),
-            rect.x + SLIDER_LABEL_X,
+            rect.x,
             cce_ui::layout::align_text_y(rect.y, rect.height, label_size, 0.0),
             label_size,
             [0xaa, 0xaa, 0xbb],
@@ -261,7 +284,7 @@ impl cce_ui::widget::Paint for ColorSlider {
         let vw = cce_ui::widget::display::measure_text_width(&val_str, &sans, value_size);
         ctx.text(
             val_str,
-            rect.x + rect.width - SLIDER_LABEL_X - vw,
+            rect.x + rect.width - vw,
             cce_ui::layout::align_text_y(rect.y, rect.height, value_size, 0.0),
             value_size,
             [0xcc, 0xcc, 0xdd],
@@ -524,22 +547,29 @@ impl ColorApp {
         let mut texts = Vec::new();
 
         // 1. Layout elements (root plate container DISSOLVED: widgets are top-level; its plate
-        // is emitted below as the first tuple)
-        let preview_y_offset = if self.with_alpha { SLIDER_ROW_H } else { 0.0 };
-        let preview_y = PREVIEW_Y + preview_y_offset;
-        let button_y = BUTTON_Y + preview_y_offset;
+        // is emitted below as the first tuple). Everything here stands on the root
+        // plate: inset from the window edge by root_plate_inset, the slider rows,
+        // the preview and the button row one root_plate_gap apart, the two
+        // buttons one root_plate_gap apart.
+        let inset = cce_ui::layout::root_plate_inset();
+        let gap = cce_ui::layout::root_plate_gap();
+        let content_w = self.width as f32 - 2.0 * inset;
 
-        let apply_x = PREVIEW_X;
-        let cancel_x = PREVIEW_X + BUTTON_W + BUTTON_GAP;
+        for (i, slider) in self.sliders.iter_mut().enumerate() {
+            let row_y = inset + i as f32 * SLIDER_ROW_H;
+            slider.set_rect(inset, row_y, content_w, SLIDER_ROW_H);
+        }
+
+        let preview_x = inset;
+        let preview_y = inset + self.sliders.len() as f32 * SLIDER_ROW_H + gap;
+        let button_y = preview_y + PREVIEW_H + gap;
+
+        let apply_x = inset;
+        let cancel_x = inset + BUTTON_W + gap;
 
         if self.expecting_output {
             self.apply_btn.set_rect(apply_x, button_y, BUTTON_W, BUTTON_H);
             self.cancel_btn.set_rect(cancel_x, button_y, BUTTON_W, BUTTON_H);
-        }
-
-        for (i, slider) in self.sliders.iter_mut().enumerate() {
-            let row_y = SLIDER_START_Y + i as f32 * SLIDER_ROW_H;
-            slider.set_rect(0.0, row_y, self.width as f32, SLIDER_ROW_H);
         }
 
         // 2. Each top-level widget rendered through the same immediate-mode path the root
@@ -572,7 +602,7 @@ impl ColorApp {
 
         if self.with_alpha {
             // Draw checkerboard behind the preview box
-            let px = PREVIEW_X;
+            let px = preview_x;
             let py = preview_y;
             let pw = PREVIEW_W;
             let ph = PREVIEW_H;
@@ -604,13 +634,15 @@ impl ColorApp {
             self.blue,
             if self.with_alpha { self.alpha } else { 1.0 },
         ]);
-        custom_pc.rect(linear_col, PREVIEW_X, preview_y, PREVIEW_W, PREVIEW_H);
+        custom_pc.rect(linear_col, preview_x, preview_y, PREVIEW_W, PREVIEW_H);
 
-        // Hex string readout
+        // Hex string readout, one root_plate_gap to the right of the preview.
         let hex = self.hex();
         custom_pc.text(
             &hex,
-            PREVIEW_X + PREVIEW_W + 16.0,
+            preview_x + PREVIEW_W + gap,
+            // TODO(style): the readout's vertical placement in the preview's
+            // height is an alignment, not a gap — align_text_y is the honest form.
             preview_y + 26.0,
             16.0,
             [0.88, 0.88, 0.91, 1.0],
@@ -681,12 +713,7 @@ impl Application for ColorApp {
         let expecting_output = !std::io::stdout().is_terminal();
 
         let initial_w = 380;
-        let initial_h = if expecting_output {
-            if with_alpha { 464 } else { 428 }
-        } else {
-            if with_alpha { 360 } else { 324 }
-        };
-
+        let initial_h = window_height(with_alpha, expecting_output);
 
         let apply_btn = Button::new(0.0, 0.0, BUTTON_W, BUTTON_H)
             .with_label("Apply")
@@ -745,11 +772,7 @@ impl Application for ColorApp {
     }
 
     fn settings(&self) -> WindowSettings {
-        let win_h = if self.expecting_output {
-            if self.with_alpha { 464 } else { 428 }
-        } else {
-            if self.with_alpha { 360 } else { 324 }
-        };
+        let win_h = window_height(self.with_alpha, self.expecting_output);
         WindowSettings {
             title: "Color Editor".to_string(),
             app_id: "cce-color-editor".to_string(),
