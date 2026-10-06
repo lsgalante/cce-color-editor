@@ -22,7 +22,6 @@ const SLIDER_VALUE_W: f32 = 56.0;
 const SLIDER_TRACK_H: f32 = 20.0;
 const PREVIEW_W: f32 = 160.0;
 const PREVIEW_H: f32 = 72.0;
-const BUTTON_H: f32 = 32.0;
 const BUTTON_W: f32 = 100.0;
 
 /// The window's height for a given layout: the slider rows, the preview and
@@ -35,7 +34,7 @@ fn window_height(with_alpha: bool, expecting_output: bool) -> u32 {
     let rows = if with_alpha { 7.0 } else { 6.0 };
     let mut bottom = inset + rows * SLIDER_ROW_H + gap + PREVIEW_H;
     if expecting_output {
-        bottom += gap + BUTTON_H;
+        bottom += gap + cce_ui::layout::button_height();
     }
     (bottom + inset).ceil() as u32
 }
@@ -568,8 +567,9 @@ impl ColorApp {
         let cancel_x = inset + BUTTON_W + gap;
 
         if self.expecting_output {
-            self.apply_btn.set_rect(apply_x, button_y, BUTTON_W, BUTTON_H);
-            self.cancel_btn.set_rect(cancel_x, button_y, BUTTON_W, BUTTON_H);
+            let btn_h = cce_ui::layout::button_height();
+            self.apply_btn.set_rect(apply_x, button_y, BUTTON_W, btn_h);
+            self.cancel_btn.set_rect(cancel_x, button_y, BUTTON_W, btn_h);
         }
 
         // 2. Each top-level widget rendered through the same immediate-mode path the root
@@ -715,13 +715,14 @@ impl Application for ColorApp {
         let initial_w = 380;
         let initial_h = window_height(with_alpha, expecting_output);
 
-        let apply_btn = Button::new(0.0, 0.0, BUTTON_W, BUTTON_H)
+        let btn_h = cce_ui::layout::button_height();
+        let apply_btn = Button::new(0.0, 0.0, BUTTON_W, btn_h)
             .with_label("Apply")
             .with_bg([0.20, 0.40, 0.65, 1.0])
             .with_hover_bg([0.30, 0.52, 0.78, 1.0])
             .with_label_color([0.93, 0.93, 0.94, 1.0]);
 
-        let cancel_btn = Button::new(0.0, 0.0, BUTTON_W, BUTTON_H)
+        let cancel_btn = Button::new(0.0, 0.0, BUTTON_W, btn_h)
             .with_label("Cancel")
             .with_bg([0.40, 0.20, 0.20, 1.0])
             .with_hover_bg([0.55, 0.20, 0.20, 1.0])
