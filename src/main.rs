@@ -1,3 +1,4 @@
+use cce_ui::widget::Owned;
 use cce_ui::engine::{Application, WindowSettings, LogicalSize, LogicalPosition, EngineState};
 use cce_ui::widget::{
     Adapted, Button, WidgetHost, EventCtx, UiContext, MouseButton, ElementState, KeyEvent,
@@ -405,9 +406,9 @@ enum Message {
 // ── ColorApp State ───────────────────────────────────────────────────
 
 struct ColorApp {
-    apply_btn: cce_ui::widget::Adapted<cce_ui::widget::Button>,
-    cancel_btn: cce_ui::widget::Adapted<cce_ui::widget::Button>,
-    sliders: Vec<Adapted<ColorSlider>>,
+    apply_btn: Owned<cce_ui::widget::Adapted<cce_ui::widget::Button>>,
+    cancel_btn: Owned<cce_ui::widget::Adapted<cce_ui::widget::Button>>,
+    sliders: Vec<Owned<Adapted<ColorSlider>>>,
 
     red: f32,
     green: f32,
@@ -741,9 +742,9 @@ impl Application for ColorApp {
         }
 
         let mut app = Self {
-            apply_btn,
-            cancel_btn,
-            sliders,
+            apply_btn: Owned::new(apply_btn),
+            cancel_btn: Owned::new(cancel_btn),
+            sliders: sliders.into_iter().map(Owned::new).collect(),
             red: r,
             green: g,
             blue: b,
