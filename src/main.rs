@@ -1,5 +1,5 @@
 use cce_ui::widget::Owned;
-use cce_ui::engine::{Application, WindowSettings, LogicalSize, LogicalPosition, EngineState};
+use cce_ui::engine::{Application, WindowSettings, LogicalSize, LogicalPosition};
 use cce_ui::widget::{
     Adapted, Button, WidgetHost, EventCtx, UiContext, MouseButton, ElementState, KeyEvent,
     MouseScrollDelta, Event,
@@ -7,7 +7,6 @@ use cce_ui::widget::{
 use cce_ui::layout::RenderTarget;
 use cce_ui::scene::layout::{Rect, Size};
 use cce_ui::scene::paint::PaintCtx;
-use wayland_client::QueueHandle;
 use std::io::IsTerminal;
 
 
@@ -681,7 +680,7 @@ impl Application for ColorApp {
         Some(&self.ui_context)
     }
 
-    fn new(_qh: &QueueHandle<EngineState<Self>>, _sender: calloop::channel::Sender<Self::Message>) -> Self {
+    fn create(_sender: cce_ui::engine::AppSender<Self::Message>) -> Self {
         let args: Vec<String> = std::env::args().collect();
         let mut with_alpha = false;
         let mut stream = false;
