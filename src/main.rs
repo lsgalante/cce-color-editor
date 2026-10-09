@@ -1,4 +1,4 @@
-use cce_ui::widget::Owned;
+use cce_ui::widget::Handle;
 use cce_ui::engine::{Application, WindowSettings, LogicalSize, LogicalPosition};
 use cce_ui::widget::{
     Adapted, Button, WidgetHost, EventCtx, UiContext, MouseButton, ElementState, KeyEvent,
@@ -405,9 +405,9 @@ enum Message {
 // ── ColorApp State ───────────────────────────────────────────────────
 
 struct ColorApp {
-    apply_btn: Owned<cce_ui::widget::Adapted<cce_ui::widget::Button>>,
-    cancel_btn: Owned<cce_ui::widget::Adapted<cce_ui::widget::Button>>,
-    sliders: Vec<Owned<Adapted<ColorSlider>>>,
+    apply_btn: Handle<cce_ui::widget::Adapted<cce_ui::widget::Button>>,
+    cancel_btn: Handle<cce_ui::widget::Adapted<cce_ui::widget::Button>>,
+    sliders: Vec<Handle<Adapted<ColorSlider>>>,
 
     red: f32,
     green: f32,
@@ -459,7 +459,8 @@ impl ColorApp {
     }
 
     fn update_sliders_color_state(&mut self) {
-        for slider in &mut self.sliders {
+        for &h in &self.sliders {
+            let slider = &mut self.ui_context[h];
             slider.r = self.red;
             slider.g = self.green;
             slider.b = self.blue;
@@ -529,14 +530,15 @@ impl ColorApp {
     }
 
     fn sync_slider_values(&mut self) {
-        self.sliders[0].value = self.red;
-        self.sliders[1].value = self.green;
-        self.sliders[2].value = self.blue;
-        self.sliders[3].value = self.hue;
-        self.sliders[4].value = self.saturation;
-        self.sliders[5].value = self.lightness;
+        let (ui, s) = (&mut self.ui_context, &self.sliders);
+        ui[s[0]].value = self.red;
+        ui[s[1]].value = self.green;
+        ui[s[2]].value = self.blue;
+        ui[s[3]].value = self.hue;
+        ui[s[4]].value = self.saturation;
+        ui[s[5]].value = self.lightness;
         if self.with_alpha {
-            self.sliders[6].value = self.alpha;
+            ui[s[6]].value = self.alpha;
         }
     }
 
@@ -554,9 +556,9 @@ impl ColorApp {
         let gap = cce_ui::layout::root_plate_gap();
         let content_w = self.width as f32 - 2.0 * inset;
 
-        for (i, slider) in self.sliders.iter_mut().enumerate() {
+        for (i, &h) in self.sliders.iter().enumerate() {
             let row_y = inset + i as f32 * SLIDER_ROW_H;
-            slider.set_rect(inset, row_y, content_w, SLIDER_ROW_H);
+            self.ui_context[h].set_rect(inset, row_y, content_w, SLIDER_ROW_H);
         }
 
         let preview_x = inset;
@@ -568,8 +570,8 @@ impl ColorApp {
 
         if self.expecting_output {
             let btn_h = cce_ui::layout::button_height();
-            self.apply_btn.set_rect(apply_x, button_y, BUTTON_W, btn_h);
-            self.cancel_btn.set_rect(cancel_x, button_y, BUTTON_W, btn_h);
+            self.ui_context[self.apply_btn].set_rect(apply_x, button_y, BUTTON_W, btn_h);
+            self.ui_context[self.cancel_btn].set_rect(cancel_x, button_y, BUTTON_W, btn_h);
         }
 
         // 2. Each top-level widget rendered through the same immediate-mode path the root
@@ -577,21 +579,14 @@ impl ColorApp {
         // The window base is not in this list — `display_list` emits the standard root
         // plate first, under everything gathered here.
         let mut window_pc = PageContent::new();
-        {
-            let self_ptr = self as *mut Self;
-            unsafe {
-                for slider in (*self_ptr).sliders.iter_mut() {
-                    let (x, y, w, h) = slider.rect();
-                    cce_ui::layout::render_widget(&mut window_pc, slider, x, y, w, h, &mut self.ui_context);
-                }
-            }
-            unsafe {
-                if self.expecting_output {
-                    let (x, y, w, h) = (*self_ptr).apply_btn.rect();
-                    cce_ui::layout::render_widget(&mut window_pc, &mut (*self_ptr).apply_btn, x, y, w, h, &mut self.ui_context);
-                    let (x, y, w, h) = (*self_ptr).cancel_btn.rect();
-                    cce_ui::layout::render_widget(&mut window_pc, &mut (*self_ptr).cancel_btn, x, y, w, h, &mut self.ui_context);
-                }
+        for &h in &self.sliders {
+            let (x, y, w, hh) = self.ui_context[h].rect();
+            cce_ui::layout::render_widget_h(&mut window_pc, h, x, y, w, hh, &mut self.ui_context);
+        }
+        if self.expecting_output {
+            for h in [self.apply_btn, self.cancel_btn] {
+                let (x, y, w, hh) = self.ui_context[h].rect();
+                cce_ui::layout::render_widget_h(&mut window_pc, h, x, y, w, hh, &mut self.ui_context);
             }
         }
 
@@ -740,10 +735,12 @@ impl Application for ColorApp {
             sliders.push(ColorSlider::new("A", 6));
         }
 
+        // The context owns the widgets; the app keeps their handles.
+        let mut ui_context = UiContext::new();
         let mut app = Self {
-            apply_btn: Owned::new(apply_btn),
-            cancel_btn: Owned::new(cancel_btn),
-            sliders: sliders.into_iter().map(Owned::new).collect(),
+            apply_btn: ui_context.insert(apply_btn),
+            cancel_btn: ui_context.insert(cancel_btn),
+            sliders: sliders.into_iter().map(|w| ui_context.insert(w)).collect(),
             red: r,
             green: g,
             blue: b,
@@ -761,7 +758,7 @@ impl Application for ColorApp {
             height: initial_h,
             scale_factor: 1.0,
             needs_rebuild: true,
-            ui_context: UiContext::new(),
+            ui_context,
             widgets: Vec::new(),
             texts: Vec::new(),
         };
@@ -828,19 +825,15 @@ impl Application for ColorApp {
         // mouse_wheel; the buttons never scrolled).
         let mut changed_slider = None;
         let mut any = false;
-        {
-            let self_ptr = self as *mut Self;
-            unsafe {
-                for slider in (*self_ptr).sliders.iter_mut() {
-                    if self.ui_context.propagate_event(&event, slider.id()) {
-                        any = true;
-                        break;
-                    }
-                }
+        for &h in &self.sliders {
+            if self.ui_context.propagate_event(&event, h.id()) {
+                any = true;
+                break;
             }
         }
         if any {
-            for (i, slider) in self.sliders.iter_mut().enumerate() {
+            for (i, &h) in self.sliders.iter().enumerate() {
+                let slider = &mut self.ui_context[h];
                 if slider.just_changed {
                     slider.just_changed = false;
                     changed_slider = Some((i, slider.value));
@@ -923,13 +916,14 @@ impl Application for ColorApp {
             let cancel = self.cancel_btn.id();
             self.ui_context.propagate_event(&ev, cancel);
         }
-        let slider_roots: Vec<_> = self.sliders.iter().map(|s| s.id()).collect();
+        let slider_roots: Vec<_> = self.sliders.iter().map(|h| h.id()).collect();
         for root in slider_roots {
             self.ui_context.propagate_event(&ev, root);
         }
         // Drain the drag's value change like the wheel path does.
         let mut changed_slider = None;
-        for (i, slider) in self.sliders.iter_mut().enumerate() {
+        for (i, &h) in self.sliders.iter().enumerate() {
+            let slider = &mut self.ui_context[h];
             if slider.just_changed {
                 slider.just_changed = false;
                 changed_slider = Some((i, slider.value));
@@ -970,23 +964,24 @@ impl Application for ColorApp {
                 self.needs_rebuild = true;
             }
 
-            if self.apply_btn.take_click() {
+            if self.ui_context[self.apply_btn].take_click() {
                 return Some(Message::Apply);
             }
-            if self.cancel_btn.take_click() {
+            if self.ui_context[self.cancel_btn].take_click() {
                 return Some(Message::Cancel);
             }
         }
 
         if !handled {
-            let slider_roots: Vec<_> = self.sliders.iter().map(|s| s.id()).collect();
+            let slider_roots: Vec<_> = self.sliders.iter().map(|h| h.id()).collect();
             for root in slider_roots {
                 if self.ui_context.propagate_event(&ev, root) {
                     break;
                 }
             }
             let mut changed_slider = None;
-            for (i, slider) in self.sliders.iter_mut().enumerate() {
+            for (i, &h) in self.sliders.iter().enumerate() {
+                let slider = &mut self.ui_context[h];
                 if slider.just_changed {
                     slider.just_changed = false;
                     changed_slider = Some((i, slider.value));
