@@ -4,7 +4,7 @@ use cce_ui::widget::{
     Adapted, Button, WidgetHost, EventCtx, UiContext, MouseButton, ElementState, KeyEvent,
     MouseScrollDelta, Event,
 };
-use cce_ui::layout::RenderTarget;
+use cce_ui::scene::paint::RenderTarget;
 use cce_ui::scene::layout::{Rect, Size};
 use cce_ui::scene::paint::PaintCtx;
 use std::io::IsTerminal;
@@ -55,7 +55,7 @@ impl PageContent {
     }
 }
 
-impl cce_ui::layout::RenderTarget for PageContent {
+impl cce_ui::scene::paint::RenderTarget for PageContent {
     fn rect(&mut self, color: [f32; 4], x: f32, y: f32, w: f32, h: f32) {
         self.rects.push((color, x, y, w, h, 0.0, (true, true, true, true)));
     }
@@ -581,12 +581,12 @@ impl ColorApp {
         let mut window_pc = PageContent::new();
         for &h in &self.sliders {
             let (x, y, w, hh) = self.ui_context[h].rect();
-            cce_ui::layout::render_widget_h(&mut window_pc, h, x, y, w, hh, &mut self.ui_context);
+            cce_ui::compose::render_widget_h(&mut window_pc, h, x, y, w, hh, &mut self.ui_context);
         }
         if self.expecting_output {
             for h in [self.apply_btn, self.cancel_btn] {
                 let (x, y, w, hh) = self.ui_context[h].rect();
-                cce_ui::layout::render_widget_h(&mut window_pc, h, x, y, w, hh, &mut self.ui_context);
+                cce_ui::compose::render_widget_h(&mut window_pc, h, x, y, w, hh, &mut self.ui_context);
             }
         }
 
