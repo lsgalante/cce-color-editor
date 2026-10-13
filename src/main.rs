@@ -2,7 +2,7 @@ use cce_ui::widget::Handle;
 use cce_ui::engine::{Application, WindowSettings, LogicalSize, LogicalPosition};
 use cce_ui::widget::{
     Adapted, Button, WidgetHost, EventCtx, UiContext, MouseButton, ElementState, KeyEvent,
-    MouseScrollDelta, Event,
+    MouseScrollDelta, Event, WidgetEvent,
 };
 use cce_ui::scene::layout::{Rect, Size};
 use cce_ui::scene::paint::{DisplayList, PaintCtx};
@@ -307,6 +307,13 @@ impl cce_ui::widget::Input for ColorSlider {
         }
     }
 
+    /// The "value changed" flag every path above raises (a press on the track, a wheel
+    /// notch, a drag step — `drag_update` has no `EventCtx` to emit from), drained here so
+    /// the app's sweep (`UiContext::take_events`) reports it as `WidgetEvent::Changed`.
+    fn take_change(&mut self) -> bool {
+        std::mem::take(&mut self.just_changed)
+    }
+
     fn draggable(&self, _rect: Rect) -> bool {
         true
     }
@@ -513,6 +520,12 @@ impl ColorApp {
             let btn_h = cce_ui::layout::button_height();
             self.ui_context[self.apply_btn].set_rect(apply_x, button_y, BUTTON_W, btn_h);
             self.ui_context[self.cancel_btn].set_rect(cancel_x, button_y, BUTTON_W, btn_h);
+        } else {
+            // No caller to report to, so no buttons: parked off-screen, where they are no
+            // Tab stop and nothing hits them (left at their construction rect they sat
+            // unseen in the top-left corner).
+            self.ui_context[self.apply_btn].set_rect(-1000.0, -1000.0, 1.0, 1.0);
+            self.ui_context[self.cancel_btn].set_rect(-1000.0, -1000.0, 1.0, 1.0);
         }
 
         for &h in &self.sliders {
@@ -574,6 +587,43 @@ impl ColorApp {
             None,
         );
     }
+
+    /// Act on everything the widgets reported since the last sweep
+    /// (`UiContext::take_events`): a slider's change recolours, an Apply / Cancel click
+    /// becomes its message. Run after every path that hands the context an event — keys
+    /// included, so Enter / Space on a Tab-focused button acts on that key. Returns the
+    /// message, and whether the colour changed.
+    ///
+    /// Only the lowest changed slider is applied, as the per-slider drains did (first
+    /// wins): applying it re-derives every other channel (`sync_slider_values`), so a
+    /// second slider's change in the same sweep would only re-apply the value just
+    /// written to it. One dispatch moves one slider anyway (the press, wheel or drag
+    /// target).
+    fn drain_widget_events(&mut self) -> (Option<Message>, bool) {
+        let mut msg = None;
+        let mut changed: Option<usize> = None;
+        for (id, ev) in self.ui_context.take_events() {
+            match ev {
+                WidgetEvent::Clicked if id == self.apply_btn.id() => {
+                    msg.get_or_insert(Message::Apply);
+                }
+                WidgetEvent::Clicked if id == self.cancel_btn.id() => {
+                    msg.get_or_insert(Message::Cancel);
+                }
+                WidgetEvent::Changed => {
+                    if let Some(i) = self.sliders.iter().position(|h| h.id() == id) {
+                        changed = Some(changed.map_or(i, |c| c.min(i)));
+                    }
+                }
+                _ => {}
+            }
+        }
+        if let Some(i) = changed {
+            let val = self.ui_context[self.sliders[i]].value;
+            self.update_color_from_slider(i, val);
+        }
+        (msg, changed.is_some())
+    }
 }
 
 // ── Application Trait Implementation ────────────────────────────────
@@ -583,6 +633,14 @@ impl Application for ColorApp {
 
     fn ui_context(&self) -> Option<&cce_ui::context::UiContext> {
         Some(&self.ui_context)
+    }
+
+    /// The runner's own passes over the widgets need it: the toolkit's Tab walk (Tab /
+    /// Shift+Tab move between Apply and Cancel; Enter / Space press the focused one — see
+    /// `handle_key_input`), the context's tick (the buttons' hover fades) and an assistive
+    /// tool's focus and press. Without it Tab reached `handle_key_input` and did nothing.
+    fn ui_context_mut(&mut self) -> Option<&mut cce_ui::context::UiContext> {
+        Some(&mut self.ui_context)
     }
 
     fn create(_sender: cce_ui::engine::AppSender<Self::Message>) -> Self {
@@ -729,26 +787,14 @@ impl Application for ColorApp {
         };
         // root plate container dissolved: propagate to each slider directly (they own
         // mouse_wheel; the buttons never scrolled).
-        let mut changed_slider = None;
-        let mut any = false;
         for &h in &self.sliders {
             if self.ui_context.propagate_event(&event, h.id()) {
-                any = true;
                 break;
             }
         }
-        if any {
-            for (i, &h) in self.sliders.iter().enumerate() {
-                let slider = &mut self.ui_context[h];
-                if slider.just_changed {
-                    slider.just_changed = false;
-                    changed_slider = Some((i, slider.value));
-                    break;
-                }
-            }
-        }
-        if let Some((i, val)) = changed_slider {
-            self.update_color_from_slider(i, val);
+        // A wheel clicks nothing, so there is no message to lose here.
+        let (_, recolored) = self.drain_widget_events();
+        if recolored {
             *needs_rebuild = true;
             self.needs_rebuild = true;
         }
@@ -810,19 +856,8 @@ impl Application for ColorApp {
         for root in slider_roots {
             self.ui_context.propagate_event(&ev, root);
         }
-        // Drain the drag's value change like the wheel path does.
-        let mut changed_slider = None;
-        for (i, &h) in self.sliders.iter().enumerate() {
-            let slider = &mut self.ui_context[h];
-            if slider.just_changed {
-                slider.just_changed = false;
-                changed_slider = Some((i, slider.value));
-                break;
-            }
-        }
-        if let Some((i, val)) = changed_slider {
-            self.update_color_from_slider(i, val);
-        }
+        // A drag's value change, like the wheel's. A move clicks nothing.
+        let _ = self.drain_widget_events();
         // Legacy parity: every pointer move rebuilt (hover fades ride the rebuild).
         *needs_rebuild = true;
         self.needs_rebuild = true;
@@ -834,8 +869,8 @@ impl Application for ColorApp {
         }
 
         // Routed dispatch (6bd shrink): the router hit-gates presses, records the drag
-        // target, and delivers DragEnd on release; the app keeps the take_click /
-        // just_changed drains.
+        // target, and delivers DragEnd on release; the app sweeps what the widgets
+        // reported (`drain_widget_events`).
         let ev = Event::MouseButton { button, state, x: pos.x, y: pos.y, local_x: pos.x, local_y: pos.y };
         let was_dragging = self.ui_context.is_dragging;
         let mut handled = false;
@@ -853,13 +888,6 @@ impl Application for ColorApp {
                 *needs_rebuild = true;
                 self.needs_rebuild = true;
             }
-
-            if self.ui_context[self.apply_btn].take_click() {
-                return Some(Message::Apply);
-            }
-            if self.ui_context[self.cancel_btn].take_click() {
-                return Some(Message::Cancel);
-            }
         }
 
         if !handled {
@@ -869,20 +897,15 @@ impl Application for ColorApp {
                     break;
                 }
             }
-            let mut changed_slider = None;
-            for (i, &h) in self.sliders.iter().enumerate() {
-                let slider = &mut self.ui_context[h];
-                if slider.just_changed {
-                    slider.just_changed = false;
-                    changed_slider = Some((i, slider.value));
-                    break;
-                }
-            }
-            if let Some((i, val)) = changed_slider {
-                self.update_color_from_slider(i, val);
-                *needs_rebuild = true;
-                self.needs_rebuild = true;
-            }
+        }
+
+        let (msg, recolored) = self.drain_widget_events();
+        if recolored {
+            *needs_rebuild = true;
+            self.needs_rebuild = true;
+        }
+        if msg.is_some() {
+            return msg;
         }
 
         // The router delivered DragEnd on the first propagate call of a release; rebuild
@@ -895,7 +918,24 @@ impl Application for ColorApp {
         None
     }
 
-    fn handle_key_input(&mut self, event: &KeyEvent, _needs_rebuild: &mut bool) -> Option<Self::Message> {
+    fn handle_key_input(&mut self, event: &KeyEvent, needs_rebuild: &mut bool) -> Option<Self::Message> {
+        // A button the Tab walk focused takes Enter / Space itself (the router hands a key
+        // to the focused widget first), so Enter on a focused Cancel cancels. An assistive
+        // tool's press arrives this way too.
+        if self.expecting_output && self.ui_context.focused_widget.is_some() {
+            let ev = Event::KeyInput(event.clone());
+            if self.ui_context.propagate_event(&ev, self.apply_btn.id()) {
+                *needs_rebuild = true;
+            }
+        }
+        let (msg, recolored) = self.drain_widget_events();
+        if recolored {
+            *needs_rebuild = true;
+            self.needs_rebuild = true;
+        }
+        if msg.is_some() {
+            return msg;
+        }
         if event.state == ElementState::Pressed {
             match event.logical_key {
                 cce_ui::widget::Key::Named(cce_ui::widget::NamedKey::Escape) => {
