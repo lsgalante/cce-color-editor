@@ -4,9 +4,8 @@ use cce_ui::widget::{
     Adapted, Button, WidgetHost, EventCtx, UiContext, MouseButton, ElementState, KeyEvent,
     MouseScrollDelta, Event,
 };
-use cce_ui::scene::paint::RenderTarget;
 use cce_ui::scene::layout::{Rect, Size};
-use cce_ui::scene::paint::PaintCtx;
+use cce_ui::scene::paint::{DisplayList, PaintCtx};
 use std::io::IsTerminal;
 
 
@@ -37,52 +36,6 @@ fn window_height(with_alpha: bool, expecting_output: bool) -> u32 {
         bottom += gap + cce_ui::layout::button_height();
     }
     (bottom + inset).ceil() as u32
-}
-
-// ── PageContent for custom Target Rendering ────────────────────────
-
-pub struct PageContent {
-    pub rects: Vec<([f32; 4], f32, f32, f32, f32, f32, (bool, bool, bool, bool))>,
-    pub texts: Vec<(String, f32, f32, f32, [f32; 4], Option<String>, Option<[f32; 4]>)>,
-}
-
-impl PageContent {
-    pub fn new() -> Self {
-        Self {
-            rects: Vec::new(),
-            texts: Vec::new(),
-        }
-    }
-}
-
-impl cce_ui::scene::paint::RenderTarget for PageContent {
-    fn rect(&mut self, color: [f32; 4], x: f32, y: f32, w: f32, h: f32) {
-        self.rects.push((color, x, y, w, h, 0.0, (true, true, true, true)));
-    }
-
-    fn rect_with_radius(&mut self, color: [f32; 4], x: f32, y: f32, w: f32, h: f32, radius: f32) {
-        self.rects.push((color, x, y, w, h, radius, (true, true, true, true)));
-    }
-
-    fn rect_with_radius_corners(&mut self, color: [f32; 4], x: f32, y: f32, w: f32, h: f32, radius: f32, corners: (bool, bool, bool, bool)) {
-        self.rects.push((color, x, y, w, h, radius, corners));
-    }
-
-    fn text(&mut self, content: &str, x: f32, y: f32, size: f32, color: [f32; 4]) {
-        self.texts.push((content.to_string(), size, x, y, color, None, None));
-    }
-
-    fn text_with_font(&mut self, content: &str, x: f32, y: f32, size: f32, color: [f32; 4], font: &str) {
-        self.texts.push((content.to_string(), size, x, y, color, Some(font.to_string()), None));
-    }
-
-    fn text_with_bounds(&mut self, content: &str, x: f32, y: f32, size: f32, color: [f32; 4], bounds: Option<[f32; 4]>) {
-        self.texts.push((content.to_string(), size, x, y, color, None, bounds));
-    }
-
-    fn text_with_font_and_bounds(&mut self, content: &str, x: f32, y: f32, size: f32, color: [f32; 4], font: &str, bounds: Option<[f32; 4]>) {
-        self.texts.push((content.to_string(), size, x, y, color, Some(font.to_string()), bounds));
-    }
 }
 
 // ── Custom ColorSlider Widget (narrow traits, wrapped in Adapted) ────
@@ -382,18 +335,6 @@ impl cce_ui::widget::Input for ColorSlider {
     }
 }
 
-// ── AppWidget for flat/rounded rect rendering ────────────────────────
-
-struct AppWidget {
-    x: f32,
-    y: f32,
-    w: f32,
-    h: f32,
-    color: [f32; 4],
-    radius: f32,
-    corners: (bool, bool, bool, bool),
-}
-
 // ── Message definition ──────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
@@ -424,18 +365,13 @@ struct ColorApp {
     stream: bool,
     last_streamed: String,
 
-    cursor_x: f32,
-    cursor_y: f32,
     width: u32,
     height: u32,
     scale_factor: f64,
+    /// The layout is stale (`rebuild_layout`): set by anything that moves a widget's
+    /// state, cleared when the next frame lays the widgets out again.
     needs_rebuild: bool,
     ui_context: UiContext,
-
-    widgets: Vec<AppWidget>,
-    // (content, font_size, x, y, color, font, bounds) — the PageContent text tuples,
-    // emitted as display-list Text prims.
-    texts: Vec<(String, f32, f32, f32, [f32; 4], Option<String>, Option<[f32; 4]>)>,
 }
 
 impl ColorApp {
@@ -542,16 +478,23 @@ impl ColorApp {
         }
     }
 
+    /// Where the colour preview sits: one `root_plate_gap` under the last slider row,
+    /// flush with the rows' left edge.
+    fn preview_origin(&self) -> (f32, f32) {
+        let inset = cce_ui::layout::root_plate_inset();
+        let gap = cce_ui::layout::root_plate_gap();
+        (inset, inset + self.sliders.len() as f32 * SLIDER_ROW_H + gap)
+    }
+
     fn rebuild_layout(&mut self) {
         self.ui_context.clear_hierarchy();
-        let mut widgets = Vec::new();
-        let mut texts = Vec::new();
 
-        // 1. Layout elements (root plate container DISSOLVED: widgets are top-level; its plate
-        // is emitted below as the first tuple). Everything here stands on the root
-        // plate: inset from the window edge by root_plate_inset, the slider rows,
-        // the preview and the button row one root_plate_gap apart, the two
-        // buttons one root_plate_gap apart.
+        // Root plate container DISSOLVED: the widgets are top-level, and `display_list`
+        // paints the plate first. Everything here stands on the root plate: inset from the
+        // window edge by root_plate_inset, the slider rows, the preview and the button row
+        // one root_plate_gap apart, the two buttons one root_plate_gap apart. Each widget
+        // gets its rect, then `compose::place_h` lays it out at exactly that block (the
+        // layout half of the flat-host `render_widget` this used to call).
         let inset = cce_ui::layout::root_plate_inset();
         let gap = cce_ui::layout::root_plate_gap();
         let content_w = self.width as f32 - 2.0 * inset;
@@ -561,10 +504,8 @@ impl ColorApp {
             self.ui_context[h].set_rect(inset, row_y, content_w, SLIDER_ROW_H);
         }
 
-        let preview_x = inset;
-        let preview_y = inset + self.sliders.len() as f32 * SLIDER_ROW_H + gap;
+        let (_, preview_y) = self.preview_origin();
         let button_y = preview_y + PREVIEW_H + gap;
-
         let apply_x = inset;
         let cancel_x = inset + BUTTON_W + gap;
 
@@ -574,36 +515,28 @@ impl ColorApp {
             self.ui_context[self.cancel_btn].set_rect(cancel_x, button_y, BUTTON_W, btn_h);
         }
 
-        // 2. Each top-level widget rendered through the same immediate-mode path the root
-        // recursion used: the sliders' plain gradient quads, then the rounded buttons.
-        // The window base is not in this list — `display_list` emits the standard root
-        // plate first, under everything gathered here.
-        let mut window_pc = PageContent::new();
         for &h in &self.sliders {
             let (x, y, w, hh) = self.ui_context[h].rect();
-            cce_ui::compose::render_widget_h(&mut window_pc, h, x, y, w, hh, &mut self.ui_context);
+            cce_ui::compose::place_h(h, x, y, w, hh, &mut self.ui_context);
         }
         if self.expecting_output {
             for h in [self.apply_btn, self.cancel_btn] {
                 let (x, y, w, hh) = self.ui_context[h].rect();
-                cce_ui::compose::render_widget_h(&mut window_pc, h, x, y, w, hh, &mut self.ui_context);
+                cce_ui::compose::place_h(h, x, y, w, hh, &mut self.ui_context);
             }
         }
 
-        // 5. Render custom elements
-        let mut custom_pc = PageContent::new();
+        self.ui_context.clear_dirty();
+        self.needs_rebuild = false;
+    }
 
-
-
+    /// The preview (over a checkerboard when the colour has alpha) and its hex readout,
+    /// one root_plate_gap to its right.
+    fn paint_preview(&self, pc: &mut PaintCtx) {
+        let (px, py) = self.preview_origin();
+        let (pw, ph) = (PREVIEW_W, PREVIEW_H);
         if self.with_alpha {
-            // Draw checkerboard behind the preview box
-            let px = preview_x;
-            let py = preview_y;
-            let pw = PREVIEW_W;
-            let ph = PREVIEW_H;
-
-            custom_pc.rect([0.8, 0.8, 0.8, 1.0], px, py, pw, ph);
-
+            pc.quad(Rect { x: px, y: py, width: pw, height: ph }, [0.8, 0.8, 0.8, 1.0]);
             let grid_size = 12.0;
             let cols = (pw / grid_size).ceil() as i32;
             let rows = (ph / grid_size).ceil() as i32;
@@ -615,54 +548,31 @@ impl ColorApp {
                         let qw = grid_size.min(px + pw - qx);
                         let qh = grid_size.min(py + ph - qy);
                         if qw > 0.0 && qh > 0.0 {
-                            custom_pc.rect([1.0, 1.0, 1.0, 1.0], qx, qy, qw, qh);
+                            pc.quad(Rect { x: qx, y: qy, width: qw, height: qh }, [1.0, 1.0, 1.0, 1.0]);
                         }
                     }
                 }
             }
         }
-
-        // Color block preview
         let linear_col = cce_ui::color::to_linear([
             self.red,
             self.green,
             self.blue,
             if self.with_alpha { self.alpha } else { 1.0 },
         ]);
-        custom_pc.rect(linear_col, preview_x, preview_y, PREVIEW_W, PREVIEW_H);
+        pc.quad(Rect { x: px, y: py, width: pw, height: ph }, linear_col);
 
-        // Hex string readout, one root_plate_gap to the right of the preview.
-        let hex = self.hex();
-        custom_pc.text(
-            &hex,
-            preview_x + PREVIEW_W + gap,
+        pc.text_with(
+            self.hex(),
+            px + pw + cce_ui::layout::root_plate_gap(),
             // TODO(style): the readout's vertical placement in the preview's
             // height is an alignment, not a gap — align_text_y is the honest form.
-            preview_y + 26.0,
+            py + 26.0,
             16.0,
-            [0.88, 0.88, 0.91, 1.0],
+            [0xe0, 0xe0, 0xe8],
+            None,
+            None,
         );
-
-        // 6. Gather all quads and text labels
-        for pc_part in [window_pc, custom_pc] {
-            for (c, x, y, w, h, r, corners) in &pc_part.rects {
-                widgets.push(AppWidget {
-                    x: *x,
-                    y: *y,
-                    w: *w,
-                    h: *h,
-                    color: *c,
-                    radius: *r,
-                    corners: *corners,
-                });
-            }
-            texts.extend(pc_part.texts);
-        }
-
-        self.widgets = widgets;
-        self.texts = texts;
-        self.ui_context.clear_dirty();
-        self.needs_rebuild = false;
     }
 }
 
@@ -752,15 +662,11 @@ impl Application for ColorApp {
             expecting_output,
             stream,
             last_streamed: String::new(),
-            cursor_x: 0.0,
-            cursor_y: 0.0,
             width: initial_w,
             height: initial_h,
             scale_factor: 1.0,
             needs_rebuild: true,
             ui_context,
-            widgets: Vec::new(),
-            texts: Vec::new(),
         };
 
         app.sync_slider_values();
@@ -848,9 +754,8 @@ impl Application for ColorApp {
         }
     }
 
-    fn display_list(&mut self, size: LogicalSize, scale: f64) -> Option<cce_ui::scene::paint::DisplayList> {
-        // Phase 6 single paint path: the whole frame — geometry and text — is this one list.
-        // rebuild_layout flattens the UI (incl. color ramps/gradients) into self.widgets/self.texts.
+    fn display_list(&mut self, size: LogicalSize, scale: f64) -> Option<DisplayList> {
+        // The single paint path: the whole frame, geometry and text, is this one list.
         if self.needs_rebuild || self.width != size.width as u32 || self.height != size.height as u32 || self.scale_factor != scale {
             self.width = size.width as u32;
             self.height = size.height as u32;
@@ -858,33 +763,22 @@ impl Application for ColorApp {
             cce_ui::scale::set_scale_factor(scale as f32);
             self.rebuild_layout();
         }
-        use cce_ui::scene::layout::Rect;
-        let mut pc = cce_ui::scene::paint::PaintCtx::new();
+        let mut pc = PaintCtx::new();
         // The standard root plate (cce-ui PlateSpec::window).
         pc.root_plate(self.width as f32, self.height as f32);
-        for w in &self.widgets {
-            let rect = Rect { x: w.x, y: w.y, width: w.w, height: w.h };
-            if w.radius > 0.1 {
-                pc.rounded_rect(rect, w.radius, w.corners, w.color);
-            } else {
-                pc.quad(rect, w.color);
+        // Each widget as it paints itself, through the toolkit's walk: the slider rows
+        // (their gradient bands and labels), then Apply / Cancel with their real relief.
+        // (Until 2026-10-12 they were replayed through a flat `RenderTarget` that dropped
+        // the buttons' run edge and flattened their face.)
+        for &h in &self.sliders {
+            cce_ui::widget::painter::paint_root_into(&self.ui_context, &self.ui_context[h], &mut pc);
+        }
+        if self.expecting_output {
+            for h in [self.apply_btn, self.cancel_btn] {
+                cce_ui::widget::painter::paint_root_into(&self.ui_context, &self.ui_context[h], &mut pc);
             }
         }
-        for (text, font_size, x, y, col, font, bounds) in &self.texts {
-            pc.text_with(
-                text.clone(),
-                *x,
-                *y,
-                *font_size,
-                [
-                    (col[0] * 255.0) as u8,
-                    (col[1] * 255.0) as u8,
-                    (col[2] * 255.0) as u8,
-                ],
-                font.clone(),
-                *bounds,
-            );
-        }
+        self.paint_preview(&mut pc);
         Some(pc.finish())
     }
 
@@ -902,10 +796,6 @@ impl Application for ColorApp {
     }
 
     fn handle_pointer_move(&mut self, pos: LogicalPosition, needs_rebuild: &mut bool) {
-        self.cursor_x = pos.x;
-        self.cursor_y = pos.y;
-        cce_ui::widget::hover_animation::set_cursor_pos(pos.x, pos.y);
-
         // Routed dispatch (6bd shrink): one PointerMove through the router per root —
         // hover bookkeeping plus the router's drag forwarding (replaces the app-held
         // dragging index; DragUpdate reaches the drag target even off-rect).
